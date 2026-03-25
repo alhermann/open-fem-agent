@@ -368,10 +368,22 @@ class DealiiBackend(SolverBackend):
 
 
 def _generate_cmakelists(target_name: str) -> str:
+    # If DEALII_ROOT points to source with a build dir, use that build
+    dealii_root = os.environ.get("DEALII_ROOT", "")
+    extra_hints = ""
+    if dealii_root:
+        for build_dir in ["build", "build/release", "build/Release"]:
+            candidate = Path(dealii_root) / build_dir
+            if (candidate / "deal.IIConfig.cmake").exists() or candidate.is_dir():
+                extra_hints = f" {candidate}"
+                break
+        if not extra_hints and Path(dealii_root).is_dir():
+            extra_hints = f" {dealii_root}"
+
     return f"""\
 cmake_minimum_required(VERSION 3.1)
 find_package(deal.II 9.0 REQUIRED
-  HINTS ${{DEAL_II_DIR}} ${{deal.II_DIR}} /usr /usr/local
+  HINTS ${{DEAL_II_DIR}} ${{deal.II_DIR}}{extra_hints} /usr /usr/local
 )
 deal_ii_initialize_cached_variables()
 project({target_name})

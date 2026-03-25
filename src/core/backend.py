@@ -137,3 +137,42 @@ def get_python_executable() -> str:
     """
     import sys
     return sys.executable
+
+
+def get_env_with_source_root(env_var: str) -> dict:
+    """Get an environment dict that includes a source build from *_ROOT.
+
+    If the env var (e.g. KRATOS_ROOT, NGSOLVE_ROOT) points to a directory
+    with a build/, that build path is prepended to PYTHONPATH so the
+    source-built version takes priority over pip-installed packages.
+
+    This enables the develop workflow: modify source → build → use.
+
+    Returns a copy of os.environ with PYTHONPATH adjusted.
+    """
+    import os
+    env = os.environ.copy()
+    root = os.environ.get(env_var, "")
+    if not root or not Path(root).is_dir():
+        return env
+
+    # Check for Python source builds (build/, lib/, install/)
+    for build_dir in ["build/lib", "build", "build/Release/lib", "build/Release",
+                      "install/lib", "lib"]:
+        candidate = Path(root) / build_dir
+        if candidate.is_dir():
+            # Check if it contains Python packages
+            has_python = any(candidate.rglob("*.py"))
+            if has_python:
+                pp = env.get("PYTHONPATH", "")
+                build_path = str(candidate)
+                if build_path not in pp:
+                    env["PYTHONPATH"] = f"{build_path}:{pp}" if pp else build_path
+                break
+
+    # Also add the root itself (for editable installs / src layouts)
+    pp = env.get("PYTHONPATH", "")
+    if root not in pp:
+        env["PYTHONPATH"] = f"{root}:{pp}" if pp else root
+
+    return env

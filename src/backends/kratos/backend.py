@@ -14,6 +14,7 @@ VTK output is configured via ProjectParameters.json.
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 import uuid
@@ -206,6 +207,11 @@ class KratosBackend(SolverBackend):
         )
 
         cmd = [python, str(script_path)]
+
+        # If KRATOS_ROOT has a source build, use it over pip-installed version
+        from core.backend import get_env_with_source_root
+        env = get_env_with_source_root("KRATOS_ROOT")
+
         start = time.time()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -213,6 +219,7 @@ class KratosBackend(SolverBackend):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(work_dir),
+                env=env,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             job.elapsed = time.time() - start
