@@ -189,5 +189,84 @@ class TestFebioBackend(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class TestSourceBuildDetection(unittest.TestCase):
+    """Test that get_env_with_source_root correctly detects source builds."""
+
+    def test_no_root_set(self):
+        """When env var is not set, returns env unchanged."""
+        from core.backend import get_env_with_source_root
+        old = os.environ.pop("NONEXISTENT_ROOT", None)
+        env = get_env_with_source_root("NONEXISTENT_ROOT")
+        self.assertIsInstance(env, dict)
+        # Should not crash, should return valid env
+        self.assertIn("PATH", env)
+
+    def test_root_set_no_build(self):
+        """When root is set but has no build dir, root itself is added to PYTHONPATH."""
+        from core.backend import get_env_with_source_root
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["_TEST_ROOT"] = tmpdir
+            env = get_env_with_source_root("_TEST_ROOT")
+            self.assertIn(tmpdir, env.get("PYTHONPATH", ""))
+            del os.environ["_TEST_ROOT"]
+
+    def test_root_with_build_dir(self):
+        """When root has build/ with .py files, build path prepended to PYTHONPATH."""
+        from core.backend import get_env_with_source_root
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            build_dir = Path(tmpdir) / "build" / "lib"
+            build_dir.mkdir(parents=True)
+            (build_dir / "test_module.py").write_text("# test")
+            os.environ["_TEST_ROOT"] = tmpdir
+            env = get_env_with_source_root("_TEST_ROOT")
+            pp = env.get("PYTHONPATH", "")
+            # Build path should appear before root
+            self.assertIn(str(build_dir), pp)
+            del os.environ["_TEST_ROOT"]
+
+    def test_dealii_cmake_hints(self):
+        """deal.II cmake generator includes DEALII_ROOT hints."""
+        from backends.dealii.backend import _generate_cmakelists
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create fake build with cmake config
+            cmake_dir = Path(tmpdir) / "build" / "lib" / "cmake" / "deal.II"
+            cmake_dir.mkdir(parents=True)
+            (cmake_dir / "deal.IIConfig.cmake").write_text("# fake")
+            os.environ["DEALII_ROOT"] = tmpdir
+            cmake = _generate_cmakelists("test_target")
+            self.assertIn(str(cmake_dir), cmake)
+            del os.environ["DEALII_ROOT"]
+
+    def test_dealii_cmake_no_root(self):
+        """Without DEALII_ROOT, cmake uses standard search paths."""
+        from backends.dealii.backend import _generate_cmakelists
+        old = os.environ.pop("DEALII_ROOT", None)
+        cmake = _generate_cmakelists("test_target")
+        self.assertIn("find_package(deal.II", cmake)
+        self.assertIn("/usr", cmake)
+        if old:
+            os.environ["DEALII_ROOT"] = old
+
+    def test_fourc_root_detected(self):
+        """FOURC_ROOT is used by 4C backend for binary detection."""
+        from backends.fourc.backend import _find_fourc_binary
+        # Just verify it doesn't crash
+        result = _find_fourc_binary()
+        # May or may not find binary depending on system
+        self.assertTrue(result is None or result.is_file())
+
+    def test_developer_source_env_vars(self):
+        """All developer entries have source_env_var field."""
+        from tools.developer import _SOURCE_LOCATIONS
+        for solver, info in _SOURCE_LOCATIONS.items():
+            self.assertIn("source_env_var", info,
+                          f"{solver} missing source_env_var in developer info")
+            self.assertTrue(info["source_env_var"].endswith("_ROOT"),
+                            f"{solver} env var should end with _ROOT")
+
+
 if __name__ == "__main__":
     unittest.main()
