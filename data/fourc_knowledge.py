@@ -436,6 +436,25 @@ FOURC_KNOWLEDGE = {
             "the flag slightly (e.g. 0.1mm gap) to avoid Gmsh fragment operations "
             "that create non-quad-meshable surfaces. This is a negligible geometric "
             "approximation that vastly simplifies meshing.",
+            "FSI SLAVE interface CANNOT carry Dirichlet BCs. With "
+            "iter_monolithicstructuresplit (structure=slave), structural Dirichlet "
+            "nodes must NOT overlap FSI coupling nodes. If they do, switch to "
+            "iter_monolithicfluidsplit (structure=master) or exclude overlapping "
+            "nodes from the FSI interface.",
+            "IO/RUNTIME VTK OUTPUT/ALE does NOT exist — it crashes 4C. Only "
+            "/STRUCTURE and /FLUID subsections are valid for FSI VTK output. "
+            "For ALE fields, use post_processor --filter=vtu on native output.",
+            "Valid COUPALGO values for monolithic FSI: "
+            "iter_monolithicfluidsplit (structure=master, recommended), "
+            "iter_monolithicstructuresplit (structure=slave), "
+            "iter_mortar_monolithicfluidsplit (non-matching meshes), "
+            "iter_sliding_monolithicfluidsplit (sliding interface). "
+            "For partitioned: iter_stagg_AITKEN_rel_force (default), "
+            "iter_stagg_fixed_rel_force.",
+            "Inflow ramp rate affects FSI stability. For initial testing, use "
+            "a slow ramp (5-10s period, e.g. cos(pi*t/5)) rather than the "
+            "standard 2s Turek-Hron ramp. Fast ramps cause Newton divergence "
+            "even with laminar flow.",
         ],
     },
 
