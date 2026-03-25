@@ -1,0 +1,412 @@
+"""
+FEniCS (dolfinx) solver backend.
+
+Generates Python scripts using the dolfinx API, executes them,
+and collects VTU/XDMF output files.
+
+Template generation is delegated to the ``generators`` sub-package.
+"""
+
+import asyncio
+import logging
+import os
+import shutil
+import time
+import uuid
+from pathlib import Path
+from typing import Optional
+
+from core.backend import (
+    SolverBackend, BackendStatus, InputFormat,
+    PhysicsCapability, JobHandle,
+)
+from core.registry import register_backend
+
+logger = logging.getLogger("open-fem-agent.fenics")
+
+# Conda environment with dolfinx
+_CONDA_PREFIX = os.environ.get("FENICS_CONDA_PREFIX", "")
+_FENICS_PYTHON = os.environ.get("FENICS_PYTHON", "")
+
+
+def _find_fenics_python() -> Optional[Path]:
+    """Locate the Python binary with dolfinx installed.
+
+    FEniCS (dolfinx) is typically in a conda env, not in the server's venv.
+    We check: env var -> conda prefix -> common conda locations -> server Python.
+    """
+    import sys
+
+    # 1. Explicit env var (e.g., FENICS_PYTHON=/path/to/conda/envs/fenics/bin/python)
+    if _FENICS_PYTHON and Path(_FENICS_PYTHON).is_file():
+        return Path(_FENICS_PYTHON)
+
+    # 2. Conda env path
+    if _CONDA_PREFIX:
+        p = Path(_CONDA_PREFIX) / "bin" / "python"
+        if p.is_file():
+            return p
+
+    # 3. Search common conda env locations
+    home = Path.home()
+    for conda_dir in [home / "miniconda3", home / "miniforge3", home / "anaconda3"]:
+        p = conda_dir / "envs" / "fenics" / "bin" / "python"
+        if p.is_file():
+            return p
+
+    # 4. The Python running this server (may have dolfinx if installed in same env)
+    return Path(sys.executable)
+
+
+# ---- Physics capabilities (used by supported_physics) ----
+# Defined here so the backend class can return them without importing generators.
+_PHYSICS_CAPABILITIES = [
+    PhysicsCapability(
+        name="poisson",
+        description="Poisson equation / diffusion",
+        spatial_dims=[2, 3],
+        element_types=["triangle", "tetrahedron", "quadrilateral", "hexahedron"],
+        template_variants=["2d", "3d", "l_domain", "rectangle"],
+    ),
+    PhysicsCapability(
+        name="linear_elasticity",
+        description="Linear elasticity (small strain)",
+        spatial_dims=[2, 3],
+        element_types=["triangle", "tetrahedron", "quadrilateral", "hexahedron"],
+        template_variants=["2d", "3d", "plate_hole", "thick_beam"],
+    ),
+    PhysicsCapability(
+        name="heat",
+        description="Heat conduction (steady / transient)",
+        spatial_dims=[2, 3],
+        element_types=["triangle", "tetrahedron"],
+        template_variants=["2d_steady", "2d_transient", "rectangle"],
+    ),
+    PhysicsCapability(
+        name="navier_stokes",
+        description="Incompressible Navier-Stokes (cavity, channel with obstacle)",
+        spatial_dims=[2, 3],
+        element_types=["triangle", "tetrahedron"],
+        template_variants=["2d", "3d", "channel_cylinder"],
+    ),
+    PhysicsCapability(
+        name="thermal_structural",
+        description="Coupled thermal-structural (heat -> thermal expansion)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="hyperelasticity",
+        description="Nonlinear hyperelasticity (Neo-Hookean, large deformation)",
+        spatial_dims=[3],
+        element_types=["tetrahedron"],
+        template_variants=["3d"],
+    ),
+    PhysicsCapability(
+        name="stokes",
+        description="Stokes flow with Taylor-Hood P2/P1 (lid-driven cavity)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="convection_diffusion",
+        description="Convection-diffusion (SUPG stabilized)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="eigenvalue",
+        description="Eigenvalue problems (Laplace) via SLEPc",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="biharmonic",
+        description="Biharmonic equation (4th order) via interior penalty DG",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="mixed_poisson",
+        description="Mixed Poisson / Darcy flow (Raviart-Thomas + DG pressure)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="reaction_diffusion",
+        description="Two-species reaction-diffusion system (coupled, transient)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+]
+
+
+class FenicsBackend(SolverBackend):
+
+    def name(self) -> str:
+        return "fenics"
+
+    def display_name(self) -> str:
+        return "FEniCSx (dolfinx)"
+
+    def check_availability(self) -> tuple[BackendStatus, str]:
+        python = _find_fenics_python()
+        if not python:
+            return BackendStatus.NOT_INSTALLED, "No Python with dolfinx found"
+
+        # Quick import check
+        import subprocess
+        try:
+            result = subprocess.run(
+                [str(python), "-c", "import dolfinx; print(dolfinx.__version__)"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                ver = result.stdout.strip()
+                return BackendStatus.AVAILABLE, f"dolfinx {ver} at {python}"
+            else:
+                return BackendStatus.NOT_INSTALLED, f"dolfinx import failed: {result.stderr.strip()}"
+        except Exception as e:
+            return BackendStatus.NOT_INSTALLED, f"Check failed: {e}"
+
+    @staticmethod
+    def _convert_xdmf_to_vtu(work_dir: Path):
+        """Convert XDMF+HDF5 output to VTU for universal PyVista compatibility.
+
+        FEniCS XDMF uses XInclude which crashes PyVista's VTK reader.
+        This reads the HDF5 data directly and writes a standard VTU via meshio.
+        """
+        import h5py
+        import numpy as np
+
+        xdmf_files = list(work_dir.glob("*.xdmf"))
+        for xdmf_path in xdmf_files:
+            h5_path = xdmf_path.with_suffix(".h5")
+            if not h5_path.exists():
+                continue
+
+            try:
+                import meshio
+                with h5py.File(h5_path, "r") as h5:
+                    # Read mesh topology and geometry
+                    mesh_grp = h5["Mesh"]
+                    mesh_name = list(mesh_grp.keys())[0]
+                    topo = np.array(mesh_grp[mesh_name]["topology"])
+                    geom = np.array(mesh_grp[mesh_name]["geometry"])
+
+                    # Pad 2D geometry to 3D (meshio requires 3D points)
+                    if geom.shape[1] == 2:
+                        geom = np.column_stack([geom, np.zeros(geom.shape[0])])
+
+                    # Determine cell type from topology shape and geometry dim
+                    n_nodes_per_cell = topo.shape[1]
+                    is_2d = (geom[:, 2].max() - geom[:, 2].min()) < 1e-10
+                    if n_nodes_per_cell == 3:
+                        cell_type = "triangle"
+                    elif n_nodes_per_cell == 4:
+                        cell_type = "quad" if is_2d else "tetra"
+                    elif n_nodes_per_cell == 8:
+                        cell_type = "hexahedron"
+                    elif n_nodes_per_cell == 2:
+                        cell_type = "line"
+                    else:
+                        cell_type = "triangle"  # fallback
+
+                    cells = [meshio.CellBlock(cell_type, topo)]
+
+                    # Read function data
+                    point_data = {}
+                    if "Function" in h5:
+                        for func_name in h5["Function"]:
+                            # Get the last timestep
+                            timesteps = sorted(h5["Function"][func_name].keys())
+                            data = np.array(h5["Function"][func_name][timesteps[-1]])
+                            if data.ndim == 2 and data.shape[1] == 1:
+                                data = data.flatten()
+                            point_data[func_name] = data
+
+                m = meshio.Mesh(points=geom, cells=cells, point_data=point_data)
+                vtu_path = xdmf_path.with_suffix(".vtu")
+                meshio.write(str(vtu_path), m)
+                logger.info(f"Converted {xdmf_path.name} -> {vtu_path.name}")
+            except Exception as e:
+                logger.warning(f"XDMF->VTU conversion failed for {xdmf_path}: {e}")
+
+    def input_format(self) -> InputFormat:
+        return InputFormat.PYTHON
+
+    def get_version(self) -> Optional[str]:
+        python = _find_fenics_python()
+        if not python:
+            return None
+        import subprocess
+        try:
+            r = subprocess.run(
+                [str(python), "-c", "import dolfinx; print(dolfinx.__version__)"],
+                capture_output=True, text=True, timeout=10
+            )
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+
+    def supported_physics(self) -> list[PhysicsCapability]:
+        return list(_PHYSICS_CAPABILITIES)
+
+    def get_knowledge(self, physics: str) -> dict:
+        # Detect installed version and add API notes
+        version_note = ""
+        try:
+            import subprocess
+            p = _find_fenics_python()
+            if p:
+                r = subprocess.run([str(p), "-c", "import dolfinx; print(dolfinx.__version__)"],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    ver = r.stdout.strip()
+                    version_note = (
+                        f"\n\n**Installed dolfinx version: {ver}**\n"
+                        "API notes for 0.9+/0.10+:\n"
+                        "- NonlinearProblem requires petsc_options_prefix kwarg\n"
+                        "- Use problem.solve() directly, NOT separate NewtonSolver\n"
+                        "- LinearProblem also requires petsc_options_prefix\n"
+                        "- element.interpolation_points is a property, not a method\n"
+                        "- For VTU output use VTXWriter or XDMFFile, read with pyvista (not meshio)\n"
+                    )
+        except Exception:
+            pass
+
+        # Try comprehensive deep knowledge first (from tools/deep_knowledge.py)
+        try:
+            from tools.deep_knowledge import get_deep_fenics_knowledge
+            deep = get_deep_fenics_knowledge(physics)
+            if deep:
+                if version_note:
+                    deep["_version_info"] = version_note
+                return deep
+        except (ImportError, Exception):
+            pass
+
+        # Fall back to generator-level knowledge
+        from .generators import get_knowledge as gen_knowledge, GENERAL_KNOWLEDGE
+        try:
+            return gen_knowledge(physics)
+        except KeyError:
+            pass
+
+        # General knowledge fallback
+        if physics == "_general":
+            return GENERAL_KNOWLEDGE
+
+        return {}
+
+    def generate_input(self, physics: str, variant: str, params: dict) -> str:
+        from .generators import generate_script
+        try:
+            return generate_script(physics, variant, params)
+        except KeyError:
+            from .generators import list_all_physics
+            raise ValueError(
+                f"No FEniCS generator for physics={physics!r}. "
+                f"Available: {list_all_physics()}"
+            )
+
+    def validate_input(self, content: str) -> list[str]:
+        errors = []
+        if "import dolfinx" not in content and "from dolfinx" not in content:
+            errors.append("Script does not import dolfinx")
+        if "def " not in content and "solve" not in content.lower():
+            errors.append("Script does not appear to solve anything")
+        return errors
+
+    async def run(self, input_content: str, work_dir: Path,
+                  np: int = 1, timeout=None) -> JobHandle:
+        python = _find_fenics_python()
+        if not python:
+            job = JobHandle(
+                job_id=str(uuid.uuid4())[:8],
+                backend_name="fenics",
+                work_dir=work_dir,
+                status="failed",
+                error="dolfinx not found",
+            )
+            return job
+
+        work_dir = work_dir.resolve()
+        work_dir.mkdir(parents=True, exist_ok=True)
+        script_path = work_dir / "solve.py"
+        script_path.write_text(input_content)
+
+        job_id = str(uuid.uuid4())[:8]
+        job = JobHandle(
+            job_id=job_id,
+            backend_name="fenics",
+            work_dir=work_dir,
+            status="running",
+        )
+
+        mpirun = shutil.which("mpirun")
+        if np > 1 and mpirun:
+            cmd = [mpirun, "-np", str(np), str(python), str(script_path)]
+        else:
+            cmd = [str(python), str(script_path)]
+
+        start = time.time()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(work_dir),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            job.elapsed = time.time() - start
+            job.return_code = proc.returncode
+            job.pid = proc.pid
+
+            if proc.returncode == 0:
+                job.status = "completed"
+                # Convert XDMF->VTU for PyVista compatibility
+                try:
+                    self._convert_xdmf_to_vtu(work_dir)
+                except Exception as e:
+                    logger.warning(f"XDMF->VTU post-conversion failed: {e}")
+            else:
+                job.status = "failed"
+                job.error = stderr.decode(errors="replace")[-2000:]
+
+            # Save logs
+            (work_dir / "stdout.log").write_text(stdout.decode(errors="replace"))
+            (work_dir / "stderr.log").write_text(stderr.decode(errors="replace"))
+
+        except asyncio.TimeoutError:
+            job.status = "failed"
+            job.elapsed = timeout
+            job.error = f"Timed out after {timeout}s"
+        except Exception as e:
+            job.status = "failed"
+            job.elapsed = time.time() - start
+            job.error = str(e)
+
+        return job
+
+    def get_result_files(self, job: JobHandle) -> list[Path]:
+        results = []
+        # Prefer VTU (converted from XDMF) over raw XDMF
+        for ext in ["*.vtu", "*.pvd", "*.pvtu", "*.xdmf"]:
+            results.extend(job.work_dir.rglob(ext))
+        return sorted(results)
+
+
+def register():
+    """Register the FEniCS backend with the global registry."""
+    register_backend(
+        FenicsBackend(),
+        aliases=["fenics", "fenicsx", "dolfinx", "dolfin"],
+    )

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Generated outputs (created by tools at runtime)
+simulation_outputs/
+benchmarks/results/
+benchmarks/coupling/
+meshes/
+
+# Machine-specific settings (users create their own from settings.json.example)
+.claude/settings.json
+.claude/settings.local.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.h5
+*.hdf5
+*.e
+*.exo

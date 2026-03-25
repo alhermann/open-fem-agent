@@ -1,0 +1,306 @@
+"""
+MCP tools for developer mode — read, modify, and extend solver source code.
+
+This is what makes the Open FEM Agent a development PARTNER, not just an
+operator. The agent can read solver source, understand architecture,
+suggest modifications, and even implement new features.
+"""
+
+import json
+import os
+from pathlib import Path
+from mcp.server.fastmcp import FastMCP
+from core.registry import get_backend, available_backends
+
+
+# ── Environment variables for source roots ──────────────────────────────
+# Users can point the MCP at source trees by setting these env vars
+# in .claude/settings.json under mcpServers.open-fem-agent.env:
+#
+#   FOURC_ROOT:   /path/to/4C                  (C++, CMake)
+#   DEALII_ROOT:  /path/to/dealii              (C++, CMake)
+#   FENICS_ROOT:  /path/to/dolfinx             (Python/C++, CMake)
+#   NGSOLVE_ROOT: /path/to/ngsolve             (Python/C++, CMake)
+#   KRATOS_ROOT:  /path/to/Kratos              (C++/Python, CMake)
+#   DUNE_ROOT:    /path/to/dune-fem            (Python/C++, CMake)
+#   SKFEM_ROOT:   /path/to/scikit-fem          (pure Python)
+#
+# When set, the agent can browse, modify, and rebuild the solver source.
+# When unset, the solver is assumed pip-installed (read-only).
+
+def _source_root(env_var: str, fallback: str = "") -> str:
+    """Get source root from environment, with descriptive fallback."""
+    val = os.environ.get(env_var, "")
+    if val and Path(val).is_dir():
+        return val
+    return fallback
+
+
+def _make_key_dirs(root: str, dirs: dict) -> dict:
+    """Build key_dirs dict, adding source root entries if available."""
+    result = dict(dirs)
+    if root and Path(root).is_dir():
+        result["source_root"] = root
+    return result
+
+
+# Source code locations for each backend
+_SOURCE_LOCATIONS = {
+    "fourc": {
+        "root": _source_root("FOURC_ROOT", "not set — set FOURC_ROOT env var to enable source access"),
+        "source_env_var": "FOURC_ROOT",
+        "build_system": "CMake",
+        "language": "C++20",
+        "build_command": "cd build && cmake --build . -j$(nproc)",
+        "test_command": "cd build && ctest -j$(nproc)",
+        "key_dirs": _make_key_dirs(os.environ.get("FOURC_ROOT", ""), {
+            "source": "src/",
+            "tests": "tests/input_files/",
+            "modules": "src/",
+            "elements": "src/solid_3D_ele/",
+            "materials": "src/mat/",
+            "io": "src/core/io/",
+            "templates": "open-fem-agent/src/backends/fourc/",
+        }),
+        "extension_points": [
+            "New element: add to src/<module>/4C_<module>_ele_*.hpp/cpp",
+            "New material: add to src/mat/4C_mat_*.hpp/cpp",
+            "New physics module: create src/<module_name>/ with CMakeLists.txt",
+            "New boundary condition: modify src/core/io/ readers",
+            "New inline mesh: add to open-fem-agent/src/backends/fourc/inline_mesh.py",
+        ],
+    },
+    "fenics": {
+        "root": _source_root("FENICS_ROOT", "pip-installed — set FENICS_ROOT to enable source access"),
+        "source_env_var": "FENICS_ROOT",
+        "build_system": "CMake (from source) or pip/conda (pre-built)",
+        "language": "Python + C++ (PETSc)",
+        "build_command": "pip install fenics-dolfinx  # or: cd build && cmake --build .",
+        "reference_files": "Official demos at https://docs.fenicsproject.org/dolfinx/main/python/demos.html",
+        "key_dirs": _make_key_dirs(os.environ.get("FENICS_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/fenics/backend.py",
+        }),
+        "extension_points": [
+            "New physics: add template function _<physics>_<variant>() in backend.py",
+            "New mesh type: use Gmsh Python API in template",
+            "New solver config: modify petsc_options in template",
+            "Custom weak form: modify UFL expressions in template",
+        ],
+    },
+    "dealii": {
+        "root": _source_root("DEALII_ROOT", "system-installed — set DEALII_ROOT to enable source access"),
+        "source_env_var": "DEALII_ROOT",
+        "build_system": "CMake",
+        "language": "C++17",
+        "build_command": "cmake -DDEAL_II_DIR=/usr/share/deal.II . && make",
+        "reference_files": "97 step tutorials at /usr/share/doc/libdeal.ii-doc/examples/step-*/",
+        "key_dirs": _make_key_dirs(os.environ.get("DEALII_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/dealii/backend.py",
+            "include": "/usr/include/deal.II/",
+            "step_tutorials": "/usr/share/doc/libdeal.ii-doc/examples/",
+        }),
+        "extension_points": [
+            "New physics: add C++ template function in backend.py",
+            "New element: use deal.II FE_Q, FE_DGQ, etc.",
+            "New boundary condition: modify setup_system() in template",
+            "Adaptive refinement: add Kelly error estimator loop",
+        ],
+    },
+    "ngsolve": {
+        "root": _source_root("NGSOLVE_ROOT", "pip-installed — set NGSOLVE_ROOT to enable source access"),
+        "source_env_var": "NGSOLVE_ROOT",
+        "build_system": "CMake (from source) or pip (pre-built wheels)",
+        "language": "Python + C++ (Netgen)",
+        "build_command": "pip install ngsolve  # or: cd build && cmake --build .",
+        "reference_files": "i-tutorials at https://docu.ngsolve.org/latest/i-tutorials/index.html",
+        "key_dirs": _make_key_dirs(os.environ.get("NGSOLVE_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/ngsolve/backend.py",
+        }),
+        "extension_points": [
+            "New physics: add template function in backend.py",
+            "New mesh: use Netgen geometry (SplineGeometry, CSG)",
+            "New element: use H1, HDiv, HCurl, L2 spaces",
+            "DG methods: use FacetFE spaces",
+        ],
+    },
+    "skfem": {
+        "root": _source_root("SKFEM_ROOT", "pip-installed — set SKFEM_ROOT to enable source access"),
+        "source_env_var": "SKFEM_ROOT",
+        "build_system": "pip (pure Python)",
+        "language": "Python (numpy/scipy)",
+        "build_command": "pip install scikit-fem",
+        "key_dirs": _make_key_dirs(os.environ.get("SKFEM_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/skfem/backend.py",
+        }),
+        "extension_points": [
+            "New physics: define @BilinearForm and @LinearForm",
+            "New element: use skfem.element.* (ElementTriP1, ElementQuad2, etc.)",
+            "New mesh: use MeshTri, MeshQuad, MeshHex, or import from meshio",
+            "Custom assembly: direct matrix manipulation via scipy.sparse",
+        ],
+    },
+    "kratos": {
+        "root": _source_root("KRATOS_ROOT", "pip-installed — set KRATOS_ROOT to enable source access"),
+        "source_env_var": "KRATOS_ROOT",
+        "build_system": "CMake (from source) or pip (pre-built wheels)",
+        "language": "C++ with Python bindings",
+        "build_command": "pip install KratosMultiphysics  # or: cd build && cmake --build .",
+        "source_repo": "https://github.com/KratosMultiphysics/Kratos",
+        "reference_files": "Examples at https://kratosmultiphysics.github.io/Examples/",
+        "key_dirs": _make_key_dirs(os.environ.get("KRATOS_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/kratos/backend.py",
+            "applications": "kratos/applications/",
+        }),
+        "extension_points": [
+            "New physics: add Kratos Application (C++) or use existing",
+            "New element: register via KM.KratosGlobals",
+            "CoSimulation: use CoSimulationApplication for multi-code coupling",
+            "Custom process: derive from KM.Process",
+        ],
+    },
+    "dune": {
+        "root": _source_root("DUNE_ROOT", "pip-installed — set DUNE_ROOT to enable source access"),
+        "source_env_var": "DUNE_ROOT",
+        "build_system": "CMake (from source) or pip (JIT compiles C++)",
+        "language": "Python (UFL) + C++ (JIT compiled)",
+        "build_command": "pip install dune-fem  # or: cd build && cmake --build .",
+        "reference_files": "Tutorials at https://www.dune-project.org/sphinx/content/sphinx/dune-fem/",
+        "key_dirs": _make_key_dirs(os.environ.get("DUNE_ROOT", ""), {
+            "templates": "open-fem-agent/src/backends/dune/backend.py",
+        }),
+        "extension_points": [
+            "New physics: define UFL weak forms (same syntax as FEniCS)",
+            "New mesh: use structuredGrid, ALUGrid, or Gmsh",
+            "DG methods: use dune-fem-dg module",
+            "Adaptive refinement: built-in h-adaptivity via mark/adapt",
+        ],
+    },
+}
+
+
+def register_developer_tools(mcp: FastMCP):
+
+    @mcp.tool()
+    def get_solver_architecture(solver: str) -> str:
+        """Get the source code architecture and extension points for a solver backend.
+
+        This enables DEVELOPER MODE: understand how to modify and extend a solver.
+        Returns source location, build system, language, key directories, and
+        specific extension points for adding new physics, elements, or materials.
+
+        Args:
+            solver: Backend name (e.g. 'fourc', 'fenics', 'dealii', 'ngsolve')
+        """
+        if solver not in _SOURCE_LOCATIONS:
+            available = ", ".join(sorted(_SOURCE_LOCATIONS.keys()))
+            return f"Unknown solver '{solver}'. Available: {available}"
+
+        info = _SOURCE_LOCATIONS[solver]
+        lines = [
+            f"## {solver} — Developer Architecture\n",
+            f"**Language:** {info['language']}",
+            f"**Build system:** {info['build_system']}",
+            f"**Source root:** {info['root']}",
+            f"**Build command:** {info.get('build_command', 'N/A')}",
+        ]
+
+        if "test_command" in info:
+            lines.append(f"**Test command:** {info['test_command']}")
+
+        if "source_repo" in info:
+            lines.append(f"**Source repo:** {info['source_repo']}")
+
+        if "key_dirs" in info:
+            lines.append("\n### Key Directories")
+            for name, path in info["key_dirs"].items():
+                lines.append(f"- **{name}:** `{path}`")
+
+        if "extension_points" in info:
+            lines.append("\n### Extension Points")
+            for ep in info["extension_points"]:
+                lines.append(f"- {ep}")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def list_solver_source_files(solver: str, pattern: str = "*.py") -> str:
+        """List source files matching a pattern in a solver's template directory.
+
+        Args:
+            solver: Backend name
+            pattern: Glob pattern (default: '*.py')
+        """
+        backend = get_backend(solver)
+        if not backend:
+            return f"Unknown solver: {solver}"
+
+        # Find the backend's source files in our repo
+        base = Path(__file__).resolve().parents[1] / "backends" / solver
+        if not base.exists():
+            # Try alternative names
+            for alt in [solver, solver.replace("-", ""), solver.replace("_", "")]:
+                base = Path(__file__).resolve().parents[1] / "backends" / alt
+                if base.exists():
+                    break
+
+        if not base.exists():
+            return f"Backend source directory not found for '{solver}'"
+
+        files = sorted(base.rglob(pattern))
+        if not files:
+            return f"No files matching '{pattern}' in {base}"
+
+        lines = [f"## {solver} source files matching '{pattern}'\n"]
+        for f in files:
+            rel = f.relative_to(base)
+            size = f.stat().st_size
+            lines.append(f"- `{rel}` ({size} bytes)")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def get_solver_capabilities_matrix() -> str:
+        """Get a comprehensive capabilities matrix across all available backends.
+
+        Shows which physics, elements, and features each solver supports.
+        Essential for cross-solver comparison and solver selection.
+        """
+        backends = available_backends()
+        if not backends:
+            return "No backends available."
+
+        lines = [
+            "## Solver Capabilities Matrix\n",
+            "| Solver | Physics | Element Types | Input Format | VTU Output | Coupling |",
+            "|--------|---------|---------------|-------------|------------|----------|",
+        ]
+
+        for b in backends:
+            physics = ", ".join(p.name for p in b.supported_physics())
+            elements = set()
+            for p in b.supported_physics():
+                elements.update(p.element_types)
+            elem_str = ", ".join(sorted(elements)[:3])
+            if len(elements) > 3:
+                elem_str += f" (+{len(elements)-3})"
+            fmt = b.input_format().value
+            vtu = "Yes" if b.name() != "febio" else "Needs binary"
+            coupling = "TSI" if b.name() == "fourc" else "DN" if b.name() in ("fenics", "fourc") else "Via MCP"
+            lines.append(
+                f"| {b.display_name()} | {physics} | {elem_str} | {fmt} | {vtu} | {coupling} |"
+            )
+
+        lines.extend([
+            "",
+            f"**Total:** {len(backends)} available backends",
+            "",
+            "### Solver Selection Guide",
+            "- **Fastest setup:** scikit-fem (pure Python, pip install)",
+            "- **Most physics:** 4C (14 physics types, native TSI/FSI)",
+            "- **Best for prototyping:** FEniCSx or DUNE-fem (UFL forms)",
+            "- **Largest community:** Kratos (54 applications)",
+            "- **Best for high-order:** NGSolve (arbitrary p)",
+            "- **Best for coupling:** 4C (native) or via MCP agent (any pair)",
+        ])
+
+        return "\n".join(lines)

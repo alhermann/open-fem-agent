@@ -1,0 +1,337 @@
+"""Linear elasticity generators for FEniCSx/dolfinx.
+
+Variants: 2d, 3d, plate_hole, thick_beam
+"""
+
+
+KNOWLEDGE = {
+    "description": "Linear elasticity with Lame parameters, solved with FEniCSx/dolfinx",
+    "weak_form": "inner(sigma(u), epsilon(v)) * dx = dot(f, v) * dx",
+    "function_space": "Vector Lagrange order 1, shape=(gdim,)",
+    "solver": {"ksp_type": "cg", "pc_type": "gamg"},
+    "pitfalls": [
+        "Vector function space: ('Lagrange', 1, (gdim,))",
+        "Dirichlet BC needs np.zeros(gdim) not scalar 0",
+        "Plane strain vs plane stress: adjust lambda accordingly",
+    ],
+    "materials": {
+        "E": {"range": [1.0, 1e12], "unit": "Pa"},
+        "nu": {"range": [0.0, 0.499], "unit": "dimensionless"},
+    },
+}
+
+VARIANTS = ["2d", "3d", "plate_hole", "thick_beam"]
+
+
+def generate(variant: str, params: dict) -> str:
+    """Dispatch to the appropriate elasticity variant."""
+    generators = {
+        "2d": _elasticity_2d,
+        "3d": _elasticity_3d,
+        "plate_hole": _elasticity_plate_hole,
+        "thick_beam": _elasticity_thick_beam,
+    }
+    gen = generators.get(variant)
+    if not gen:
+        raise ValueError(f"Unknown elasticity variant: {variant!r}. Available: {list(generators)}")
+    return gen(params)
+
+
+def _elasticity_2d(params: dict) -> str:
+    """FORMAT TEMPLATE: generates a runnable FEniCSx script.
+
+    All parameter defaults are placeholders. The user/agent must set values
+    appropriate to the specific problem being solved.
+    """
+    E = params.get("E", 1000.0)
+    nu = params.get("nu", 0.3)
+    return f'''\
+"""Linear elasticity — 2D (plane stress) — FEniCSx/dolfinx"""
+from mpi4py import MPI
+from dolfinx import mesh, fem, io, default_scalar_type
+from dolfinx.fem.petsc import LinearProblem
+import ufl
+import numpy as np
+
+# Domain dimensions — set for your problem
+Lx, Ly = 10.0, 1.0
+domain = mesh.create_rectangle(
+    MPI.COMM_WORLD, [[0, 0], [Lx, Ly]], [80, 8], mesh.CellType.triangle
+)
+V = fem.functionspace(domain, ("Lagrange", 1, (2,)))  # vector
+
+# Material
+E_val = {E}
+nu_val = {nu}
+mu = E_val / (2 * (1 + nu_val))
+lmbda = E_val * nu_val / ((1 + nu_val) * (1 - 2 * nu_val))
+
+def epsilon(u):
+    return ufl.sym(ufl.grad(u))
+
+def sigma(u):
+    return lmbda * ufl.nabla_div(u) * ufl.Identity(len(u)) + 2 * mu * epsilon(u)
+
+# Fixed left edge (x=0)
+def left_boundary(x):
+    return np.isclose(x[0], 0.0)
+
+tdim = domain.topology.dim
+fdim = tdim - 1
+left_facets = mesh.locate_entities_boundary(domain, fdim, left_boundary)
+dofs = fem.locate_dofs_topological(V, fdim, left_facets)
+bc = fem.dirichletbc(np.zeros(2, dtype=default_scalar_type), dofs, V)
+
+# Traction on right edge (x=Lx)
+u = ufl.TrialFunction(V)
+v = ufl.TestFunction(V)
+
+# Body force — set direction and magnitude for your problem
+f = fem.Constant(domain, default_scalar_type((0.0, -1.0)))
+
+a = ufl.inner(sigma(u), epsilon(v)) * ufl.dx
+L = ufl.dot(f, v) * ufl.dx
+
+problem = LinearProblem(a, L, bcs=[bc], petsc_options_prefix="solve", petsc_options={{"ksp_type": "cg", "pc_type": "gamg"}})
+uh = problem.solve()
+uh.name = "displacement"
+
+from dolfinx.io import XDMFFile
+with XDMFFile(domain.comm, "result.xdmf", "w") as xdmf:
+    xdmf.write_mesh(domain)
+    xdmf.write_function(uh)
+
+u_array = uh.x.array.reshape(-1, 2)
+print(f"Elasticity solved: max |u_y| = {{np.abs(u_array[:, 1]).max():.6e}}")
+print(f"DOFs: {{V.dofmap.index_map.size_global * 2}}")
+'''
+
+
+def _elasticity_3d(params: dict) -> str:
+    """FORMAT TEMPLATE: generates a runnable FEniCSx script.
+
+    All parameter defaults are placeholders. The user/agent must set values
+    appropriate to the specific problem being solved.
+    """
+    E = params.get("E", 1000.0)
+    nu = params.get("nu", 0.3)
+    return f'''\
+"""Linear elasticity — 3D — FEniCSx/dolfinx"""
+from mpi4py import MPI
+from dolfinx import mesh, fem, io, default_scalar_type
+from dolfinx.fem.petsc import LinearProblem
+import ufl
+import numpy as np
+
+Lx, Ly, Lz = 10.0, 1.0, 1.0
+domain = mesh.create_box(
+    MPI.COMM_WORLD, [[0, 0, 0], [Lx, Ly, Lz]], [40, 4, 4], mesh.CellType.tetrahedron
+)
+V = fem.functionspace(domain, ("Lagrange", 1, (3,)))
+
+E_val = {E}
+nu_val = {nu}
+mu = E_val / (2 * (1 + nu_val))
+lmbda = E_val * nu_val / ((1 + nu_val) * (1 - 2 * nu_val))
+
+def epsilon(u):
+    return ufl.sym(ufl.grad(u))
+
+def sigma(u):
+    return lmbda * ufl.nabla_div(u) * ufl.Identity(3) + 2 * mu * epsilon(u)
+
+def left_boundary(x):
+    return np.isclose(x[0], 0.0)
+
+tdim = domain.topology.dim
+fdim = tdim - 1
+left_facets = mesh.locate_entities_boundary(domain, fdim, left_boundary)
+dofs = fem.locate_dofs_topological(V, fdim, left_facets)
+bc = fem.dirichletbc(np.zeros(3, dtype=default_scalar_type), dofs, V)
+
+u = ufl.TrialFunction(V)
+v = ufl.TestFunction(V)
+f = fem.Constant(domain, default_scalar_type((0.0, 0.0, -1.0)))
+
+a = ufl.inner(sigma(u), epsilon(v)) * ufl.dx
+L = ufl.dot(f, v) * ufl.dx
+
+problem = LinearProblem(a, L, bcs=[bc], petsc_options_prefix="solve", petsc_options={{"ksp_type": "cg", "pc_type": "gamg"}})
+uh = problem.solve()
+uh.name = "displacement"
+
+from dolfinx.io import XDMFFile
+with XDMFFile(domain.comm, "result.xdmf", "w") as xdmf:
+    xdmf.write_mesh(domain)
+    xdmf.write_function(uh)
+
+u_array = uh.x.array.reshape(-1, 3)
+print(f"Elasticity 3D solved: max |u_z| = {{np.abs(u_array[:, 2]).max():.6e}}")
+print(f"DOFs: {{V.dofmap.index_map.size_global * 3}}")
+'''
+
+
+def _elasticity_plate_hole(params: dict) -> str:
+    """FORMAT TEMPLATE: generates a runnable FEniCSx script. Requires Gmsh.
+
+    All parameter defaults are placeholders. The user/agent must set values
+    appropriate to the specific problem being solved.
+    """
+    E = params.get("E", 1000.0)
+    nu = params.get("nu", 0.3)
+    mesh_size = params.get("mesh_size", 0.04)
+    radius = params.get("radius", 0.2)
+    return f'''\
+"""Linear elasticity: plate with circular hole — FEniCSx + Gmsh
+Tension loading on left/right edges.
+"""
+from mpi4py import MPI
+from dolfinx import mesh, fem, io, default_scalar_type
+from dolfinx.fem.petsc import LinearProblem
+import ufl
+import numpy as np
+
+# Generate plate with hole using Gmsh
+import gmsh
+gmsh.initialize()
+gmsh.option.setNumber("General.Terminal", 0)
+gmsh.model.add("plate-hole")
+rect = gmsh.model.occ.addRectangle(-1, -0.5, 0, 2, 1)
+hole = gmsh.model.occ.addDisk(0, 0, 0, {radius}, {radius})
+gmsh.model.occ.cut([(2, rect)], [(2, hole)])
+gmsh.model.occ.synchronize()
+surfaces = gmsh.model.getEntities(2)
+gmsh.model.addPhysicalGroup(2, [s[1] for s in surfaces], tag=1)
+curves = gmsh.model.getEntities(1)
+for i, c in enumerate(curves):
+    gmsh.model.addPhysicalGroup(1, [c[1]], tag=i+1)
+gmsh.option.setNumber("Mesh.CharacteristicLengthMax", {mesh_size})
+gmsh.option.setNumber("Mesh.CharacteristicLengthMin", {mesh_size} * 0.2)
+gmsh.model.mesh.generate(2)
+gmsh.write("plate_hole.msh")
+gmsh.finalize()
+
+from dolfinx.io.gmsh import read_from_msh
+mesh_data = read_from_msh("plate_hole.msh", MPI.COMM_WORLD, gdim=2)
+domain = mesh_data.mesh
+gdim = domain.geometry.dim
+V = fem.functionspace(domain, ("Lagrange", 1, (gdim,)))
+
+# Material
+E_val, nu_val = {E}, {nu}
+mu = E_val / (2 * (1 + nu_val))
+lmbda = E_val * nu_val / ((1 + nu_val) * (1 - 2 * nu_val))
+
+def epsilon(u):
+    return ufl.sym(ufl.grad(u))
+def sigma(u):
+    return lmbda * ufl.nabla_div(u) * ufl.Identity(gdim) + 2 * mu * epsilon(u)
+
+# BCs: fix left edge, tension on right
+tdim = domain.topology.dim
+fdim = tdim - 1
+domain.topology.create_connectivity(fdim, tdim)
+
+def left(x):
+    return np.isclose(x[0], -1.0)
+def right(x):
+    return np.isclose(x[0], 1.0)
+
+left_facets = mesh.locate_entities_boundary(domain, fdim, left)
+left_dofs = fem.locate_dofs_topological(V, fdim, left_facets)
+bc = fem.dirichletbc(np.zeros(gdim, dtype=default_scalar_type), left_dofs, V)
+
+# Traction on right edge
+right_facets = mesh.locate_entities_boundary(domain, fdim, right)
+right_mt = mesh.meshtags(domain, fdim, right_facets, np.full(len(right_facets), 1, dtype=np.int32))
+ds = ufl.Measure("ds", domain=domain, subdomain_data=right_mt)
+traction = fem.Constant(domain, default_scalar_type((10.0, 0.0)))
+
+u = ufl.TrialFunction(V)
+v = ufl.TestFunction(V)
+a = ufl.inner(sigma(u), epsilon(v)) * ufl.dx
+L = ufl.dot(traction, v) * ds(1)
+
+problem = LinearProblem(a, L, bcs=[bc],
+    petsc_options_prefix="elast", petsc_options={{"ksp_type": "cg", "pc_type": "gamg"}})
+uh = problem.solve()
+uh.name = "displacement"
+
+from dolfinx.io import XDMFFile
+with XDMFFile(domain.comm, "result.xdmf", "w") as xdmf:
+    xdmf.write_mesh(domain)
+    xdmf.write_function(uh)
+
+u_arr = uh.x.array.reshape(-1, gdim)
+print(f"Plate with hole: max |u| = {{np.linalg.norm(u_arr, axis=1).max():.6e}}")
+print(f"DOFs: {{V.dofmap.index_map.size_global * gdim}}")
+'''
+
+
+def _elasticity_thick_beam(params: dict) -> str:
+    """FORMAT TEMPLATE: generates a runnable FEniCSx script.
+
+    All parameter defaults are placeholders. The user/agent must set values
+    appropriate to the specific problem being solved.
+    """
+    E = params.get("E", 1000.0)
+    nu = params.get("nu", 0.3)
+    lx = params.get("lx", 5.0)
+    ly = params.get("ly", 2.0)
+    nx = int(lx * 8)
+    ny = int(ly * 8)
+    return f'''\
+"""Linear elasticity on {lx}x{ly} domain — FEniCSx/dolfinx"""
+from mpi4py import MPI
+from dolfinx import mesh, fem, io, default_scalar_type
+from dolfinx.fem.petsc import LinearProblem
+import ufl
+import numpy as np
+
+Lx, Ly = {lx}, {ly}
+domain = mesh.create_rectangle(
+    MPI.COMM_WORLD, [[0, 0], [Lx, Ly]], [{nx}, {ny}], mesh.CellType.triangle
+)
+V = fem.functionspace(domain, ("Lagrange", 1, (2,)))
+
+E_val = {E}
+nu_val = {nu}
+mu = E_val / (2 * (1 + nu_val))
+lmbda = E_val * nu_val / ((1 + nu_val) * (1 - 2 * nu_val))
+
+def epsilon(u):
+    return ufl.sym(ufl.grad(u))
+
+def sigma(u):
+    return lmbda * ufl.nabla_div(u) * ufl.Identity(len(u)) + 2 * mu * epsilon(u)
+
+def left_boundary(x):
+    return np.isclose(x[0], 0.0)
+
+tdim = domain.topology.dim
+fdim = tdim - 1
+left_facets = mesh.locate_entities_boundary(domain, fdim, left_boundary)
+dofs = fem.locate_dofs_topological(V, fdim, left_facets)
+bc = fem.dirichletbc(np.zeros(2, dtype=default_scalar_type), dofs, V)
+
+u = ufl.TrialFunction(V)
+v = ufl.TestFunction(V)
+f = fem.Constant(domain, default_scalar_type((0.0, -1.0)))
+
+a = ufl.inner(sigma(u), epsilon(v)) * ufl.dx
+L = ufl.dot(f, v) * ufl.dx
+
+problem = LinearProblem(a, L, bcs=[bc], petsc_options_prefix="solve",
+    petsc_options={{"ksp_type": "cg", "pc_type": "gamg"}})
+uh = problem.solve()
+uh.name = "displacement"
+
+from dolfinx.io import XDMFFile
+with XDMFFile(domain.comm, "result.xdmf", "w") as xdmf:
+    xdmf.write_mesh(domain)
+    xdmf.write_function(uh)
+
+u_array = uh.x.array.reshape(-1, 2)
+print(f"Elasticity solved: max |u_y| = {{np.abs(u_array[:, 1]).max():.6e}}")
+print(f"DOFs: {{V.dofmap.index_map.size_global * 2}}")
+'''

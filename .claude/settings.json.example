@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "open-fem-agent": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["-m", "server"],
+      "cwd": "src",
+      "env": {
+        "PYTHONPATH": "src",
+        "PYVISTA_OFF_SCREEN": "true",
+
+        "_comment_solvers": "Set paths for solvers you have installed:",
+
+        "FOURC_ROOT": "",
+        "FOURC_BINARY": "",
+        "LD_LIBRARY_PATH": "",
+
+        "_comment_source_access": "Set these to browse/modify solver source code:",
+        "DEALII_ROOT": "",
+        "FENICS_ROOT": "",
+        "NGSOLVE_ROOT": "",
+        "KRATOS_ROOT": "",
+        "DUNE_ROOT": "",
+        "SKFEM_ROOT": ""
+      }
+    }
+  }
+}

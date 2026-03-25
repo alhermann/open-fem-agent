@@ -1,0 +1,281 @@
+"""
+Comprehensive deal.II knowledge catalogue.
+
+Based on all 97 step tutorials (step-1 through step-97), covering all physics
+from Poisson to compressible Euler, Maxwell, FSI, contact, topology optimization.
+deal.II won the 2025 SIAM/ACM CSE Prize.
+"""
+
+DEALII_KNOWLEDGE = {
+    # ═══════════════════════════════════════════════════════════════════════
+    # OVERVIEW
+    # ═══════════════════════════════════════════════════════════════════════
+    "overview": {
+        "description": "deal.II is a C++ FEM library with 97 tutorial programs and 40+ element types",
+        "version": "9.7 (July 2025)",
+        "language": "C++17/20",
+        "build_system": "CMake: find_package(deal.II 9.5 REQUIRED)",
+        "compilation": "cmake -Bbuild . && cmake --build build -j$(nproc)",
+        "execution": "./build/my_simulation (serial) or mpirun -np N ./build/my_simulation (parallel)",
+        "output": "VTU via DataOut::write_vtu(), PVTU for parallel, PVD for time series",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ALL TUTORIALS BY PHYSICS
+    # ═══════════════════════════════════════════════════════════════════════
+    "tutorials": {
+        "description": "97 step tutorials — each a complete, working program teaching one concept",
+
+        "elliptic_pdes": {
+            "Poisson/Laplace": {
+                "basic": ["step-3 (first program)", "step-4 (dim-independent)", "step-5 (variable coeff)"],
+                "adaptive": ["step-6 (AMR + Kelly)", "step-14 (DWR goal-oriented)"],
+                "parallel": ["step-40 (p4est distributed)", "step-50 (parallel GMG)"],
+                "matrix_free": ["step-37 (MF + GMG)", "step-59 (MF DG)", "step-64 (GPU CUDA)"],
+                "hp": ["step-27 (hp-adaptive)", "step-75 (hp + MF + parallel)"],
+            },
+            "Helmholtz": ["step-7 (real)", "step-29 (complex-valued, ultrasound)"],
+            "biharmonic": ["step-47 (C0 interior penalty)", "step-82 (LDG)"],
+            "surface_PDE": ["step-38 (Laplace-Beltrami)", "step-90 (TraceFEM)"],
+            "minimal_surface": ["step-15 (nonlinear Newton)", "step-72 (AD Newton)"],
+        },
+
+        "structural_mechanics": {
+            "linear_elasticity": ["step-8 (basic)", "step-17 (MPI parallel)", "step-18 (quasi-static)"],
+            "hyperelasticity": ["step-44 (3-field Neo-Hookean)", "step-73 (AD-assisted)"],
+            "contact": ["step-41 (obstacle problem)", "step-42 (3D elasto-plastic contact, parallel)"],
+            "topology_optimization": ["step-79 (SIMP method, density-based)"],
+        },
+
+        "fluid_mechanics": {
+            "Stokes": ["step-22 (block precond)", "step-55 (MPI parallel)", "step-56 (GMG Vanka)"],
+            "Navier_Stokes": ["step-35 (projection method)", "step-57 (stationary Newton + AMR)"],
+            "compressible_Euler": ["step-33 (implicit Newton)", "step-67 (explicit DG, MF, SIMD)",
+                                  "step-69 (first-order)", "step-76 (optimized 67)"],
+            "Boussinesq": ["step-31 (convection)", "step-32 (parallel)"],
+            "two_phase_porous": ["step-21 (two-phase)", "step-43 (adaptive splitting)"],
+        },
+
+        "heat_and_diffusion": {
+            "heat_transient": ["step-26 (AMR in time)", "step-86 (SUNDIALS ARKode)"],
+            "advection_diffusion": ["step-9 (SUPG)", "step-12 (DG upwind)", "step-30 (anisotropic AMR)",
+                                   "step-51 (HDG)", "step-63 (GMG block smoothers)"],
+        },
+
+        "wave_and_dynamics": {
+            "acoustic_wave": ["step-23 (Newmark)", "step-24 (absorbing BC)"],
+            "soliton": ["step-25 (Sine-Gordon)", "step-48 (MF explicit RK)"],
+            "elastic_wave": ["step-62 (frequency domain, PML)"],
+            "Schrodinger": ["step-58 (nonlinear, operator splitting)"],
+        },
+
+        "electromagnetics": {
+            "Maxwell": ["step-81 (curl-curl, PML, Nédélec)", "step-97 (curl-curl)"],
+        },
+
+        "multiphysics_coupling": {
+            "Stokes_elasticity": ["step-46 (subdomain coupling via FE_Nothing)"],
+            "Stokes_temperature": ["step-31 (Boussinesq)", "step-32 (parallel)"],
+            "FSI": ["step-60 (immersed DLM)", "step-70 (particles)", "step-80 (non-matching)"],
+            "particle_coupling": ["step-19 (PIC)", "step-68 (Stokes particle advection)"],
+        },
+
+        "advanced_techniques": {
+            "periodic_BCs": ["step-45"],
+            "eigenvalue": ["step-36 (SLEPc, Schrodinger)"],
+            "neutron_diffusion": ["step-28 (multigroup)"],
+            "BEM": ["step-34 (potential flow)"],
+            "financial": ["step-78 (Black-Scholes options)"],
+            "unfitted_CutFEM": ["step-85 (Nitsche)", "step-95 (MF CutFEM)"],
+            "checkpoint_restart": ["step-83"],
+            "non_matching_grids": ["step-89 (mortaring)"],
+            "AD": ["step-71 (concepts)", "step-72 (energy functional)", "step-73 (elasticity)"],
+            "SUNDIALS": ["step-77 (KINSOL nonlinear)", "step-86 (ARKode time stepping)"],
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ELEMENT TYPES (40+)
+    # ═══════════════════════════════════════════════════════════════════════
+    "element_types": {
+        "H1_continuous": {
+            "FE_Q(p)": "Standard Lagrange on quads/hexes, any order p, Gauss-Lobatto points",
+            "FE_Q_Hierarchical(p)": "Hierarchical basis (efficient for hp-adaptivity)",
+            "FE_Bernstein(p)": "Bernstein polynomial basis (positive, partition of unity)",
+            "FE_Hermite(p)": "Hermite interpolation (C1 at vertices)",
+            "FE_SimplexP(p)": "Lagrange on simplices (triangles/tetrahedra)",
+            "FE_SimplexP_Bubbles(p)": "Simplex Lagrange + bubble enrichment",
+        },
+        "DG_discontinuous": {
+            "FE_DGQ(p)": "Tensor-product DG, equidistant points",
+            "FE_DGQLegendre(p)": "DG with Legendre basis (orthogonal, good for L2 projection)",
+            "FE_DGQHermite(p)": "DG Hermite-like (optimal for matrix-free, sum factorization)",
+            "FE_DGP(p)": "Complete polynomial DG (fewer DOFs than DGQ for same order)",
+            "FE_SimplexDGP(p)": "DG on simplices",
+        },
+        "Hdiv_conforming": {
+            "FE_RaviartThomas(k)": "Raviart-Thomas (normal continuous, for mixed Poisson/Darcy)",
+            "FE_BDM(k)": "Brezzi-Douglas-Marini (full polynomial H(div))",
+            "FE_ABF(k)": "Arnold-Boffi-Falk",
+            "FE_BernardiRaugel(1)": "Inf-sup stable with DGP(0) for Stokes",
+        },
+        "Hcurl_conforming": {
+            "FE_Nedelec(k)": "Nédélec edge elements for Maxwell/electromagnetics",
+            "FE_NedelecSZ(k)": "Schoeberl-Zaglmayr ordering variant",
+        },
+        "special": {
+            "FE_FaceQ(p)": "DOFs on faces only (for HDG trace systems, step-51)",
+            "FE_Nothing": "Zero-DOF element (subdomain coupling in hp, step-46)",
+            "FE_Enriched": "Enrichment wrapper for XFEM/GFEM (partition of unity)",
+            "FE_P1NC": "Nonconforming P1 (Crouzeix-Raviart analogue)",
+            "FESystem": "Combine multiple FE into vector/tensor systems",
+            "hp::FECollection": "Collection of different FE for hp-adaptivity",
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # MESH GENERATORS (30+)
+    # ═══════════════════════════════════════════════════════════════════════
+    "mesh_generators": {
+        "basic": ["hyper_cube", "subdivided_hyper_cube", "hyper_rectangle", "subdivided_hyper_rectangle"],
+        "domains": ["hyper_L", "hyper_ball", "hyper_shell", "half_hyper_shell", "quarter_hyper_shell",
+                    "concentric_hyper_shells"],
+        "3D": ["cylinder", "cylinder_shell", "truncated_cone", "pipe_junction"],
+        "engineering": ["channel_with_cylinder (DFG benchmark)", "plate_with_a_hole",
+                       "cheese (holes pattern)", "hyper_cube_with_cylindrical_hole", "hyper_cross"],
+        "simplex": ["subdivided_hyper_cube_with_simplices", "subdivided_hyper_rectangle_with_simplices"],
+        "manipulation": ["merge_triangulations", "extrude_triangulation", "replicate_triangulation"],
+        "import": ["Gmsh (.msh)", "UCD (.ucd)", "VTK (.vtk)", "ExodusII", "ABAQUS (.inp)",
+                   "OpenCASCADE (STEP/IGES, step-54)"],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ADAPTIVE MESH REFINEMENT
+    # ═══════════════════════════════════════════════════════════════════════
+    "adaptive_refinement": {
+        "error_estimators": {
+            "Kelly": "Gradient jump-based (step-6, most AMR tutorials) — KellyErrorEstimator::estimate()",
+            "DWR": "Dual-weighted residual, goal-oriented (step-14) — solves adjoint problem",
+            "smoothness": "Fourier/Legendre coefficient decay for hp-adaptivity (step-27, 75)",
+            "residual": "User-defined residual-based estimators",
+        },
+        "refinement_types": ["isotropic h", "anisotropic h (step-30)", "hp (step-27, 75)"],
+        "strategies": "refine_and_coarsen_fixed_number/fraction, SolutionTransfer for interpolation",
+        "parallel": "Automatic with p4est distributed triangulation",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SOLVERS
+    # ═══════════════════════════════════════════════════════════════════════
+    "solvers": {
+        "direct": ["SparseDirectUMFPACK (built-in)", "Trilinos Amesos (KLU/SuperLU/MUMPS)",
+                   "PETSc MUMPS"],
+        "iterative": {
+            "builtin": ["SolverCG", "SolverGMRES", "SolverFGMRES", "SolverBicgstab",
+                       "SolverMinRes", "SolverQMRS", "SolverRichardson"],
+            "trilinos": "TrilinosWrappers::SolverDirect, SolverCG, SolverGMRES",
+            "petsc": "PETScWrappers::SolverCG, SolverGMRES, etc.",
+        },
+        "preconditioners": {
+            "builtin": ["PreconditionSSOR", "PreconditionJacobi", "PreconditionChebyshev",
+                       "PreconditionBlockSSOR/SOR/Jacobi"],
+            "AMG": ["Trilinos ML/MueLu (TrilinosWrappers::PreconditionAMG)",
+                    "PETSc GAMG/BoomerAMG"],
+            "ILU": "TrilinosWrappers::PreconditionILU/ILUT",
+        },
+        "multigrid": {
+            "geometric": "mg::SmootherRelaxation + MGTransferPrebuilt (step-16)",
+            "matrix_free_GMG": "MGTransferMatrixFree + Chebyshev smoother (step-37, 50, 59)",
+            "block_smoothers": "Point/block Jacobi/SOR for advection (step-63), Vanka for Stokes (step-56)",
+        },
+        "matrix_free": {
+            "description": "MatrixFree + FEEvaluation: 3 levels of parallelism (MPI + threading + SIMD)",
+            "tutorials": "step-37, 48, 59, 64, 66, 67, 75, 76, 95",
+            "key_advantage": "10x faster than sparse matrix assembly for high-order elements",
+        },
+        "nonlinear": ["Manual Newton loop", "SUNDIALS KINSOL (step-77)"],
+        "time_integration": ["Manual theta-scheme", "SUNDIALS ARKode (step-86)", "PETSc TS (step-86)",
+                            "TimeStepping namespace (step-52, explicit/implicit RK methods)"],
+        "eigenvalue": "SLEPc EPS via PETSc interface (step-36)",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PARALLEL COMPUTING
+    # ═══════════════════════════════════════════════════════════════════════
+    "parallel": {
+        "shared_memory": "TBB (Threading Building Blocks), Taskflow (v9.7), WorkStream pattern",
+        "distributed": "MPI + p4est: parallel::distributed::Triangulation, scalable to 300,000+ processes",
+        "GPU": "CUDA via CUDAWrappers::MatrixFree (step-64), Kokkos (v9.7) for portability",
+        "demonstrated_scale": "2 × 10^12 unknowns on 304,128 MPI processes",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ADVANCED FEATURES
+    # ═══════════════════════════════════════════════════════════════════════
+    "advanced": {
+        "automatic_differentiation": "Sacado (Trilinos), ADOL-C, SymEngine — step-71/72/73",
+        "manifold_descriptions": ["SphericalManifold", "CylindricalManifold",
+                                  "TransfiniteInterpolationManifold (step-65)", "OpenCASCADE (step-54)"],
+        "periodic_BCs": "DoFTools::make_periodicity_constraints (step-45)",
+        "particles": "ParticleHandler for PIC, advection, non-matching coupling (step-19, 68, 70)",
+        "higher_order_output": "DataOutBase::VtkFlags::write_higher_order_cells (ParaView 5.5+)",
+        "unfitted_CutFEM": "step-85 (Nitsche BCs on level-set surface), step-95 (MF CutFEM)",
+        "non_matching_grids": "step-89 (mortaring), step-60 (distributed Lagrange multipliers)",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # CODE GENERATION PATTERN
+    # ═══════════════════════════════════════════════════════════════════════
+    "code_generation": {
+        "cmake": """cmake_minimum_required(VERSION 3.13.4)
+project(my_simulation)
+find_package(deal.II 9.5.0 REQUIRED HINTS ${DEAL_II_DIR})
+deal_ii_initialize_cached_variables()
+add_executable(my_simulation main.cpp)
+deal_ii_setup_target(my_simulation)""",
+
+        "class_structure": """
+class MyProblem {
+  void make_grid();        // Create or import mesh
+  void setup_system();     // Distribute DOFs, create sparsity, allocate
+  void assemble_system();  // Element loop: FEValues, cell_matrix, cell_rhs
+  void solve();            // Linear/nonlinear solve
+  void output_results();   // DataOut::write_vtu()
+  void run();              // Orchestrate all steps
+};""",
+
+        "includes_by_capability": {
+            "grid": "#include <deal.II/grid/tria.h>, grid_generator.h, grid_in.h, grid_refinement.h",
+            "fe": "#include <deal.II/fe/fe_q.h>, fe_system.h, fe_values.h, fe_interface_values.h",
+            "dof": "#include <deal.II/dofs/dof_handler.h>, dof_tools.h, dof_renumbering.h",
+            "lac": "#include <deal.II/lac/sparse_matrix.h>, solver_cg.h, precondition.h, affine_constraints.h",
+            "numerics": "#include <deal.II/numerics/data_out.h>, vector_tools.h, matrix_tools.h, error_estimator.h",
+        },
+
+        "build_and_run": "cmake -Bbuild . && cmake --build build -j$(nproc) && ./build/my_simulation",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PITFALLS
+    # ═══════════════════════════════════════════════════════════════════════
+    "pitfalls": {
+        "general": [
+            "Always refine_global() BEFORE distributing DOFs",
+            "FEValues must be reinitialized per cell: fe_values.reinit(cell)",
+            "Hanging node constraints MUST be applied after assembly for AMR",
+            "Use AffineConstraints for both Dirichlet BCs and hanging node constraints",
+            "VTU output: call DataOut::build_patches() before write_vtu()",
+        ],
+        "parallel": [
+            "For MPI: use TrilinosWrappers or PETScWrappers linear algebra, NOT built-in",
+            "Each MPI process only owns part of mesh — use locally_owned_dofs + locally_relevant_dofs",
+            "Ghost cell communication needed for assembly of off-process DOFs",
+        ],
+        "performance": [
+            "Matrix-free requires tensor-product elements (FE_Q, NOT FE_SimplexP)",
+            "For hp: set active_fe_index per cell BEFORE distributing DOFs",
+            "SolverCG requires SPD system — use SolverGMRES for indefinite (Stokes)",
+            "Block systems (Stokes): use DoFRenumbering::component_wise + BlockSparseMatrix",
+        ],
+    },
+}

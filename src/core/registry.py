@@ -1,0 +1,141 @@
+"""
+Solver backend registry — discovers and manages available backends.
+
+Backends register themselves at import time. The registry provides:
+  - List of all known backends (installed or not)
+  - List of available backends (installed and working)
+  - Backend lookup by name or alias
+  - Solver recommendation based on physics + constraints
+"""
+
+import logging
+from typing import Optional
+
+from .backend import SolverBackend, BackendStatus
+
+logger = logging.getLogger("open-fem-agent.registry")
+
+# Global registry
+_backends: dict[str, SolverBackend] = {}
+_aliases: dict[str, str] = {}
+
+
+def register_backend(backend: SolverBackend, aliases: list[str] | None = None):
+    """Register a solver backend."""
+    name = backend.name()
+    _backends[name] = backend
+    if aliases:
+        for alias in aliases:
+            _aliases[alias.lower()] = name
+    logger.info(f"Registered backend: {backend.display_name()} ({name})")
+
+
+def get_backend(name: str) -> Optional[SolverBackend]:
+    """Look up a backend by name or alias."""
+    key = name.lower()
+    if key in _backends:
+        return _backends[key]
+    if key in _aliases:
+        return _backends[_aliases[key]]
+    return None
+
+
+def list_backends() -> list[dict]:
+    """List all registered backends with their status."""
+    result = []
+    for name, backend in _backends.items():
+        status, message = backend.check_availability()
+        physics = backend.supported_physics()
+        result.append({
+            "name": name,
+            "display_name": backend.display_name(),
+            "status": status.value,
+            "message": message,
+            "input_format": backend.input_format().value,
+            "version": backend.get_version(),
+            "physics_count": len(physics),
+            "physics": [p.name for p in physics],
+        })
+    return result
+
+
+def available_backends() -> list[SolverBackend]:
+    """Return only backends that are installed and working."""
+    return [
+        b for b in _backends.values()
+        if b.check_availability()[0] == BackendStatus.AVAILABLE
+    ]
+
+
+def recommend_backend(physics: str) -> Optional[SolverBackend]:
+    """Recommend the best available backend for a given physics problem.
+
+    Priority: FEniCS (easiest to use) > 4C (most capable) > deal.ii (most flexible).
+    Only returns backends that are actually available and support the requested physics.
+    """
+    # Preference order for general use
+    preference = ["fenics", "fourc", "dealii"]
+
+    for pref_name in preference:
+        backend = _backends.get(pref_name)
+        if backend is None:
+            continue
+        status, _ = backend.check_availability()
+        if status != BackendStatus.AVAILABLE:
+            continue
+        supported = [p.name for p in backend.supported_physics()]
+        if physics.lower() in supported:
+            return backend
+    return None
+
+
+def load_all_backends():
+    """Import and register all known backends."""
+    # Each backend module registers itself on import
+    try:
+        from backends.fourc.backend import register as register_fourc
+        register_fourc()
+    except Exception as e:
+        logger.debug(f"4C backend not available: {e}")
+
+    try:
+        from backends.fenics.backend import register as register_fenics
+        register_fenics()
+    except Exception as e:
+        logger.debug(f"FEniCS backend not available: {e}")
+
+    try:
+        from backends.dealii.backend import register as register_dealii
+        register_dealii()
+    except Exception as e:
+        logger.debug(f"deal.ii backend not available: {e}")
+
+    try:
+        from backends.febio.backend import register as register_febio
+        register_febio()
+    except Exception as e:
+        logger.debug(f"FEBio backend not available: {e}")
+
+    try:
+        from backends.ngsolve.backend import register as register_ngsolve
+        register_ngsolve()
+    except Exception as e:
+        logger.debug(f"NGSolve backend not available: {e}")
+
+    try:
+        from backends.skfem.backend import register as register_skfem
+        register_skfem()
+    except Exception as e:
+        logger.debug(f"scikit-fem backend not available: {e}")
+
+    try:
+        from backends.kratos.backend import register as register_kratos
+        register_kratos()
+    except Exception as e:
+        logger.debug(f"Kratos backend not available: {e}")
+
+    try:
+        from backends.dune.backend import register as register_dune
+        register_dune()
+    except Exception as e:
+        logger.debug(f"DUNE-fem backend not available: {e}")

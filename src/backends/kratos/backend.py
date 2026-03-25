@@ -1,0 +1,251 @@
+"""
+Kratos Multiphysics solver backend.
+
+Kratos is a framework for building multi-disciplinary simulation software.
+It uses a three-file system:
+  - MainKratos.py: Python driver script
+  - ProjectParameters.json: solver settings, BCs, materials
+  - mesh.mdpa: mesh data (nodes, elements, conditions)
+
+This backend generates all three files and executes MainKratos.py.
+VTK output is configured via ProjectParameters.json.
+"""
+
+import asyncio
+import json
+import logging
+import shutil
+import time
+import uuid
+from pathlib import Path
+from typing import Optional
+
+from core.backend import (
+    SolverBackend, BackendStatus, InputFormat,
+    PhysicsCapability, JobHandle, get_python_executable,
+)
+from core.registry import register_backend
+from .generators import GENERATORS, KNOWLEDGE
+
+logger = logging.getLogger("open-fem-agent.kratos")
+
+
+class KratosBackend(SolverBackend):
+
+    def name(self) -> str:
+        return "kratos"
+
+    def display_name(self) -> str:
+        return "Kratos Multiphysics"
+
+    def check_availability(self) -> tuple[BackendStatus, str]:
+        python = get_python_executable()
+        if not python:
+            return BackendStatus.NOT_INSTALLED, "No Python found"
+        import subprocess
+        try:
+            result = subprocess.run(
+                [python, "-c",
+                 "import KratosMultiphysics as KM; "
+                 "print(KM.KratosGlobals.Kernel.Version())"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                ver = result.stdout.strip().split('\n')[0]
+                return BackendStatus.AVAILABLE, f"Kratos {ver}"
+            return BackendStatus.NOT_INSTALLED, f"Kratos import failed: {result.stderr.strip()[:200]}"
+        except Exception as e:
+            return BackendStatus.NOT_INSTALLED, f"Check failed: {e}"
+
+    def input_format(self) -> InputFormat:
+        return InputFormat.JSON
+
+    def supported_physics(self) -> list[PhysicsCapability]:
+        return [
+            PhysicsCapability(
+                name="poisson",
+                description="Poisson / convection-diffusion (LaplacianElement, EulerianConvDiff)",
+                spatial_dims=[2, 3],
+                element_types=["LaplacianElement2D3N", "EulerianConvDiff2D3N"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="linear_elasticity",
+                description="Structural mechanics: linear/nonlinear, static/dynamic (StructuralMechanicsApplication)",
+                spatial_dims=[2, 3],
+                element_types=["SmallDisplacementElement2D3N/3D4N", "TotalLagrangianElement2D3N/3D4N",
+                               "ShellThinElement3D3N", "CrBeamElement3D2N", "TrussElement3D2N"],
+                template_variants=["2d", "2d_nonlinear"],
+            ),
+            PhysicsCapability(
+                name="heat",
+                description="Thermal convection-diffusion: steady and transient (ConvectionDiffusionApplication)",
+                spatial_dims=[2, 3],
+                element_types=["EulerianConvDiff2D3N", "LaplacianElement2D3N"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="fluid",
+                description="Incompressible Navier-Stokes: VMS/QSVMS stabilized (FluidDynamicsApplication)",
+                spatial_dims=[2, 3],
+                element_types=["VMS2D3N", "QSVMS2D3N", "FractionalStep2D3N"],
+                template_variants=["2d_cavity"],
+            ),
+            PhysicsCapability(
+                name="contact",
+                description="Contact mechanics: mortar-based ALM/penalty (ContactStructuralMechanicsApplication)",
+                spatial_dims=[2, 3],
+                element_types=["ALMFrictionlessMortarContact"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="fsi",
+                description="Fluid-structure interaction via partitioned Dirichlet-Neumann (FSIApplication)",
+                spatial_dims=[2, 3],
+                element_types=["VMS + SmallDisplacement"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="structural_dynamics",
+                description="Dynamic structural analysis with Newmark/Bossak time integration",
+                spatial_dims=[2],
+                element_types=["SmallDisplacementElement2D3N"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="heat_transient",
+                description="Transient heat conduction with backward Euler time integration",
+                spatial_dims=[2],
+                element_types=["EulerianConvDiff2D3N"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="dem",
+                description="Discrete Element Method for granular/particle simulations (DEMApplication)",
+                spatial_dims=[2, 3],
+                element_types=["SphericParticle3D", "CylinderParticle2D"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="mpm",
+                description="Material Point Method for large-deformation solid mechanics (MPMApplication)",
+                spatial_dims=[2, 3],
+                element_types=["UpdatedLagrangianPQ2D", "UpdatedLagrangianAxisym"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="shape_optimization",
+                description="Shape optimization with gradient-based methods (ShapeOptimizationApplication)",
+                spatial_dims=[2, 3],
+                element_types=["SmallDisplacementElement2D3N"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="cosimulation",
+                description="CoSimulation framework for multi-solver coupling (CoSimulationApplication)",
+                spatial_dims=[2, 3],
+                element_types=["Generic (wraps sub-solvers)"],
+                template_variants=["2d"],
+            ),
+        ]
+
+    def get_knowledge(self, physics: str) -> dict:
+        # Try deep knowledge first
+        try:
+            import sys
+            data_dir = str(Path(__file__).resolve().parents[3] / "data")
+            if data_dir not in sys.path:
+                sys.path.insert(0, data_dir)
+            from kratos_knowledge import KRATOS_KNOWLEDGE as deep_knowledge
+            if physics in deep_knowledge:
+                return deep_knowledge[physics]
+        except ImportError:
+            pass
+        return KNOWLEDGE.get(physics, {})
+
+    def generate_input(self, physics: str, variant: str, params: dict) -> str:
+        key = f"{physics}_{variant}"
+        gen = GENERATORS.get(key)
+        if not gen:
+            raise ValueError(f"No Kratos template for {key}")
+        # Return the MainKratos.py script which embeds the JSON and mdpa inline
+        return gen(params)
+
+    def validate_input(self, content: str) -> list[str]:
+        errors = []
+        if "KratosMultiphysics" not in content:
+            errors.append("Script should import KratosMultiphysics")
+        try:
+            compile(content, "<kratos_input>", "exec")
+        except SyntaxError as e:
+            errors.append(f"Python syntax error: {e}")
+        return errors
+
+    async def run(self, input_content: str, work_dir: Path,
+                  np: int = 1, timeout=None) -> JobHandle:
+        python = get_python_executable()
+        if not python:
+            return JobHandle(
+                job_id=str(uuid.uuid4())[:8],
+                backend_name="kratos",
+                work_dir=work_dir,
+                status="failed",
+                error="Python not found",
+            )
+
+        work_dir = work_dir.resolve()
+        work_dir.mkdir(parents=True, exist_ok=True)
+        script_path = work_dir / "MainKratos.py"
+        script_path.write_text(input_content)
+
+        job = JobHandle(
+            job_id=str(uuid.uuid4())[:8],
+            backend_name="kratos",
+            work_dir=work_dir,
+            status="running",
+        )
+
+        cmd = [python, str(script_path)]
+        start = time.time()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(work_dir),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            job.elapsed = time.time() - start
+            job.return_code = proc.returncode
+            job.pid = proc.pid
+
+            if proc.returncode == 0:
+                job.status = "completed"
+            else:
+                job.status = "failed"
+                job.error = stderr.decode(errors="replace")[-2000:]
+
+            (work_dir / "stdout.log").write_text(stdout.decode(errors="replace"))
+            (work_dir / "stderr.log").write_text(stderr.decode(errors="replace"))
+        except asyncio.TimeoutError:
+            job.status = "failed"
+            job.elapsed = timeout
+            job.error = f"Timed out after {timeout}s"
+        except Exception as e:
+            job.status = "failed"
+            job.elapsed = time.time() - start
+            job.error = str(e)
+
+        return job
+
+    def get_result_files(self, job: JobHandle) -> list[Path]:
+        results = []
+        for ext in ["*.vtu", "*.vtk", "*.pvd"]:
+            results.extend(job.work_dir.rglob(ext))
+        return sorted(results)
+
+
+def register():
+    backend = KratosBackend()
+    register_backend(backend, aliases=["kratos", "kratosmp"])
+    logger.info("Kratos Multiphysics backend registered")

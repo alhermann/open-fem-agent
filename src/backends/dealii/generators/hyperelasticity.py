@@ -1,0 +1,367 @@
+"""Hyperelasticity templates for deal.II.
+
+Based on deal.II tutorial step-44 (Neo-Hookean, Newton-Raphson).
+"""
+
+
+def _hyperelasticity_3d(params: dict) -> str:
+    """FORMAT TEMPLATE: generates a compilable deal.II C++ program.
+    All parameter defaults are placeholders.
+    Finite-strain Neo-Hookean hyperelasticity — based on step-44 pattern.
+    """
+    refinements = params.get("refinements", 2)
+    E = params.get("E", 1000.0)
+    nu = params.get("nu", 0.3)
+    pressure = params.get("pressure", 10.0)
+    n_load_steps = params.get("n_load_steps", 10)
+    return f'''\
+/* Finite-strain Neo-Hookean hyperelasticity — based on deal.II step-44 pattern
+ * Solves quasi-static large-deformation elasticity on a unit cube.
+ * Material: compressible Neo-Hookean. Newton-Raphson nonlinear solver.
+ */
+#include <deal.II/base/quadrature_lib.h>
+#include <deal.II/base/function.h>
+#include <deal.II/base/tensor.h>
+#include <deal.II/base/timer.h>
+#include <deal.II/lac/vector.h>
+#include <deal.II/lac/full_matrix.h>
+#include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/affine_constraints.h>
+#include <deal.II/grid/tria.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_tools.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/mapping_q_eulerian.h>
+#include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/physics/elasticity/kinematics.h>
+#include <deal.II/physics/elasticity/standard_tensors.h>
+#include <fstream>
+#include <iostream>
+#include <cmath>
+
+using namespace dealii;
+
+int main()
+{{
+  const unsigned int dim = 3;
+
+  // Material parameters — set for your problem
+  const double E_mod  = {E};
+  const double nu_val = {nu};
+  const double mu     = E_mod / (2.0 * (1.0 + nu_val));
+  const double lambda = E_mod * nu_val / ((1.0 + nu_val) * (1.0 - 2.0 * nu_val));
+  const double kappa  = lambda + 2.0 / 3.0 * mu; // bulk modulus
+
+  Triangulation<dim> triangulation;
+  GridGenerator::hyper_cube(triangulation, 0.0, 1.0);
+  triangulation.refine_global({refinements});
+
+  // Set boundary IDs: 0=left(x=0), 1=right(x=1)
+  for (auto &face : triangulation.active_face_iterators())
+    if (face->at_boundary())
+      {{
+        if (std::abs(face->center()[0]) < 1e-10)
+          face->set_boundary_id(0);
+        else if (std::abs(face->center()[0] - 1.0) < 1e-10)
+          face->set_boundary_id(1);
+      }}
+
+  FESystem<dim>   fe(FE_Q<dim>(1), dim);
+  DoFHandler<dim> dof_handler(triangulation);
+  dof_handler.distribute_dofs(fe);
+
+  std::cout << "Hyperelasticity: " << dof_handler.n_dofs() << " DOFs, "
+            << triangulation.n_active_cells() << " cells" << std::endl;
+
+  const FEValuesExtractors::Vector displacement(0);
+
+  // Total displacement vector
+  Vector<double> solution(dof_handler.n_dofs());
+  Vector<double> solution_delta(dof_handler.n_dofs());
+  solution = 0;
+
+  // Load stepping
+  const unsigned int n_load_steps   = {n_load_steps};
+  const double       total_pressure = {pressure};
+
+  for (unsigned int load_step = 1; load_step <= n_load_steps; ++load_step)
+    {{
+      const double load_factor = static_cast<double>(load_step) / n_load_steps;
+      const double current_pressure = load_factor * total_pressure;
+
+      // Newton-Raphson iteration
+      for (unsigned int newton_iter = 0; newton_iter < 20; ++newton_iter)
+        {{
+          // Constraints
+          AffineConstraints<double> constraints;
+          constraints.clear();
+          // Fix left face (x=0)
+          VectorTools::interpolate_boundary_values(
+            dof_handler, 0, Functions::ZeroFunction<dim>(dim), constraints);
+          constraints.close();
+
+          // Assemble tangent stiffness and residual
+          DynamicSparsityPattern dsp(dof_handler.n_dofs());
+          DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, false);
+          SparsityPattern sparsity;
+          sparsity.copy_from(dsp);
+
+          SparseMatrix<double> tangent_matrix(sparsity);
+          Vector<double>       residual(dof_handler.n_dofs());
+
+          QGauss<dim>   quadrature(2);
+          QGauss<dim-1> face_quadrature(2);
+
+          FEValues<dim> fe_values(fe, quadrature,
+                                  update_values | update_gradients |
+                                  update_JxW_values | update_quadrature_points);
+          FEFaceValues<dim> fe_face_values(fe, face_quadrature,
+                                            update_values | update_JxW_values |
+                                            update_normal_vectors);
+
+          for (const auto &cell : dof_handler.active_cell_iterators())
+            {{
+              const unsigned int dpc = fe.n_dofs_per_cell();
+              FullMatrix<double> cell_matrix(dpc, dpc);
+              Vector<double>     cell_rhs(dpc);
+              std::vector<types::global_dof_index> local_dof_indices(dpc);
+
+              fe_values.reinit(cell);
+
+              // Get displacement gradients at quadrature points
+              std::vector<Tensor<2, dim>> grad_u(quadrature.size());
+              fe_values[displacement].get_function_gradients(solution, grad_u);
+
+              for (unsigned int q = 0; q < quadrature.size(); ++q)
+                {{
+                  // Deformation gradient F = I + grad_u
+                  Tensor<2, dim> F = Physics::Elasticity::Kinematics::F(grad_u[q]);
+                  const double   J = determinant(F);
+
+                  // Right Cauchy-Green tensor C = F^T * F
+                  const auto C     = Physics::Elasticity::Kinematics::C(F);
+                  const auto C_inv = invert(C);
+
+                  // Neo-Hookean: S = mu*(I - C^(-1)) + lambda*ln(J)*C^(-1)
+                  Tensor<2, dim> S;
+                  for (unsigned int i = 0; i < dim; ++i)
+                    for (unsigned int j = 0; j < dim; ++j)
+                      S[i][j] = mu * ((i == j ? 1.0 : 0.0) - C_inv[i][j])
+                                + lambda * std::log(J) * C_inv[i][j];
+
+                  // P = F * S (first Piola-Kirchhoff)
+                  const Tensor<2, dim> P = F * S;
+
+                  // Material tangent for Neo-Hookean
+                  // C_mat_ijkl = lambda * C_inv_ij * C_inv_kl
+                  //            + (mu - lambda*ln(J)) * (C_inv_ik*C_inv_jl + C_inv_il*C_inv_jk)
+
+                  for (unsigned int i = 0; i < dpc; ++i)
+                    {{
+                      // Residual: integral P : grad(N_i) dV
+                      Tensor<2, dim> grad_Ni;
+                      for (unsigned int d = 0; d < dim; ++d)
+                        grad_Ni[fe.system_to_component_index(i).first][d] =
+                          fe_values.shape_grad(i, q)[d];
+
+                      double val = 0;
+                      for (unsigned int a = 0; a < dim; ++a)
+                        for (unsigned int b = 0; b < dim; ++b)
+                          val += P[a][b] * grad_Ni[a][b];
+                      cell_rhs(i) -= val * fe_values.JxW(q);
+
+                      for (unsigned int j = 0; j < dpc; ++j)
+                        {{
+                          Tensor<2, dim> grad_Nj;
+                          for (unsigned int d = 0; d < dim; ++d)
+                            grad_Nj[fe.system_to_component_index(j).first][d] =
+                              fe_values.shape_grad(j, q)[d];
+
+                          // Geometric stiffness: grad_Ni^T * S * grad_Nj
+                          double geo = 0;
+                          for (unsigned int a = 0; a < dim; ++a)
+                            for (unsigned int b = 0; b < dim; ++b)
+                              geo += grad_Ni[fe.system_to_component_index(i).first][a]
+                                    * S[a][b]
+                                    * grad_Nj[fe.system_to_component_index(j).first][b];
+
+                          // Material stiffness (simplified)
+                          double mat = 0;
+                          const unsigned int ci = fe.system_to_component_index(i).first;
+                          const unsigned int cj = fe.system_to_component_index(j).first;
+                          for (unsigned int a = 0; a < dim; ++a)
+                            for (unsigned int b = 0; b < dim; ++b)
+                              {{
+                                double C_abcd = lambda * C_inv[ci][a] * C_inv[cj][b]
+                                  + (mu - lambda * std::log(J))
+                                    * (C_inv[ci][cj] * C_inv[a][b] + C_inv[ci][b] * C_inv[a][cj]);
+                                mat += fe_values.shape_grad(i, q)[a]
+                                      * C_abcd
+                                      * fe_values.shape_grad(j, q)[b];
+                              }}
+
+                          cell_matrix(i, j) += (geo + mat) * fe_values.JxW(q);
+                        }}
+                    }}
+                }}
+
+              // Neumann BC: pressure on right face (boundary_id=1) — set for your problem
+              for (unsigned int f = 0; f < cell->n_faces(); ++f)
+                if (cell->face(f)->at_boundary() && cell->face(f)->boundary_id() == 1)
+                  {{
+                    fe_face_values.reinit(cell, f);
+                    for (unsigned int q = 0; q < face_quadrature.size(); ++q)
+                      for (unsigned int i = 0; i < dpc; ++i)
+                        {{
+                          const unsigned int comp = fe.system_to_component_index(i).first;
+                          cell_rhs(i) += current_pressure *
+                                          fe_face_values.normal_vector(q)[comp] *
+                                          fe_face_values.shape_value(i, q) *
+                                          fe_face_values.JxW(q);
+                        }}
+                  }}
+
+              cell->get_dof_indices(local_dof_indices);
+              constraints.distribute_local_to_global(cell_matrix, cell_rhs,
+                                                      local_dof_indices,
+                                                      tangent_matrix, residual);
+            }}
+
+          // Check convergence
+          const double residual_norm = residual.l2_norm();
+          if (newton_iter == 0)
+            std::cout << "Load step " << load_step << "/" << n_load_steps
+                      << " (p=" << current_pressure << ")";
+          if (residual_norm < 1e-8 * dof_handler.n_dofs())
+            {{
+              std::cout << ", converged in " << newton_iter << " iters"
+                        << ", |R|=" << residual_norm << std::endl;
+              break;
+            }}
+
+          // Solve for Newton update
+          SolverControl solver_control(1000, 1e-12 * residual_norm);
+          SolverCG<Vector<double>> solver(solver_control);
+          PreconditionSSOR<SparseMatrix<double>> preconditioner;
+          preconditioner.initialize(tangent_matrix, 1.2);
+          solution_delta = 0;
+          solver.solve(tangent_matrix, solution_delta, residual, preconditioner);
+          constraints.distribute(solution_delta);
+
+          // Backtracking line search: ensure J > 0 everywhere (prevent element inversion)
+          double alpha = 1.0;
+          for (unsigned int ls = 0; ls < 10; ++ls)
+            {{
+              Vector<double> trial_solution(solution);
+              trial_solution.add(alpha, solution_delta);
+
+              // Check minimum J over all quadrature points
+              double J_min = 1e20;
+              for (const auto &cell : dof_handler.active_cell_iterators())
+                {{
+                  fe_values.reinit(cell);
+                  std::vector<std::vector<Tensor<1, dim>>> grad_u(
+                    quadrature.size(), std::vector<Tensor<1, dim>>(dim));
+                  fe_values.get_function_gradients(trial_solution, grad_u);
+                  for (unsigned int q = 0; q < quadrature.size(); ++q)
+                    {{
+                      Tensor<2, dim> F_q = unit_symmetric_tensor<dim>();
+                      for (unsigned int d = 0; d < dim; ++d)
+                        F_q[d] += grad_u[q][d];
+                      J_min = std::min(J_min, determinant(F_q));
+                    }}
+                }}
+              if (J_min > 0.01)
+                {{
+                  solution = trial_solution;
+                  break;
+                }}
+              alpha *= 0.5;
+              if (ls == 9)
+                {{
+                  std::cerr << "WARNING: line search failed, J_min=" << J_min << std::endl;
+                  solution.add(alpha, solution_delta);
+                }}
+            }}
+        }}
+    }}
+
+  // Output final deformed configuration
+  DataOut<dim> data_out;
+  data_out.attach_dof_handler(dof_handler);
+  std::vector<std::string> names(dim, "displacement");
+  std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    interp(dim, DataComponentInterpretation::component_is_part_of_vector);
+  data_out.add_data_vector(solution, names, DataOut<dim>::type_dof_data, interp);
+  data_out.build_patches();
+  std::ofstream output("result.vtu");
+  data_out.write_vtu(output);
+
+  std::cout << "Hyperelasticity: max displacement = " << solution.linfty_norm()
+            << std::endl;
+  return 0;
+}}
+'''
+
+
+# ── Knowledge ────────────────────────────────────────────────────────────
+
+KNOWLEDGE = {
+    "description": "Finite-strain hyperelasticity (step-44, step-72 with AD)",
+    "tutorial_steps": ["step-44 (three-field formulation, Neo-Hookean)",
+                      "step-72 (automatic differentiation for tangent)",
+                      "step-18 (quasi-static, updated Lagrangian)"],
+    "function_space": "FESystem<dim>(FE_Q<dim>(1), dim) for displacement-only",
+    "solver": "Newton-Raphson with line search, CG + SSOR for linear sub-problems",
+    "constitutive_models": {
+        "NeoHookean": "W = mu/2*(I1-3) + kappa/2*(J-1)^2, Cauchy: mu/J*(b-I) + kappa*(J-1)*I",
+        "Mooney-Rivlin": "W = c1*(I1-3) + c2*(I2-3)",
+        "Ogden": "W = sum_p mu_p/alpha_p * (lambda_1^alpha_p + ... - 3)",
+        "Saint-Venant-Kirchhoff": "S = lambda*tr(E)*I + 2*mu*E (simplest, not frame-indifferent for compression)",
+    },
+    "kinematics": {
+        "F": "Deformation gradient: F = I + grad(u)",
+        "C": "Right Cauchy-Green: C = F^T * F",
+        "b": "Left Cauchy-Green: b = F * F^T",
+        "J": "Volume ratio: J = det(F)",
+        "E": "Green-Lagrange: E = 0.5*(C - I)",
+    },
+    "pitfalls": [
+        "Must use load stepping for large deformations (Newton diverges otherwise)",
+        "MUST implement line search checking J=det(F) > 0 — without it, elements invert and the simulation crashes for any significant compression",
+        "Neo-Hookean with J: S = mu*(I - C^{-1}) + lambda*ln(J)*C^{-1}",
+        "Tangent has geometric + material parts: K = K_geo + K_mat",
+        "For nearly incompressible: use mixed formulation (step-44) or F-bar",
+        "Saint-Venant-Kirchhoff unstable in compression: use Neo-Hookean instead",
+        "Use roller BCs (constrain only normal component) instead of fully clamped for compression tests — clamped BCs create stress concentrations that worsen element inversion",
+        "AD (step-72) avoids manual tangent derivation: Differentiation::AD::EnergyFunctional",
+        "MappingQEulerian can visualize deformed configuration",
+        # GridGenerator boundary ID pitfall
+        "GridGenerator::subdivided_hyper_rectangle defaults ALL faces to boundary_id=0 "
+        "(colorize=false). Pass colorize=true to get distinct IDs (0-5 for 3D: "
+        "left=0, right=1, bottom=2, top=3, front=4, back=5). Without this, "
+        "Dirichlet BCs on boundary_id=0 clamp ALL faces.",
+        # Displacement-controlled loading
+        "For displacement-controlled nonlinear problems: use INCREMENTAL CONSTRAINTS. "
+        "Set inhomogeneous Dirichlet value for the FIRST Newton iteration of each "
+        "load step, then switch to homogeneous (zero increment) for subsequent "
+        "iterations. Do NOT set boundary DOFs directly in the solution vector — "
+        "this concentrates strain in boundary elements and Newton diverges.",
+        # FESystem gradient extraction
+        "For FESystem (vector-valued), use fe_values[FEValuesExtractors::Vector(0)]"
+        ".get_function_gradients() — NOT fe_values.get_function_gradients() which "
+        "is the scalar-FE signature and will not compile.",
+        # Solver choice
+        "For < 50k DOFs, use SparseDirectUMFPACK instead of CG+SSOR. "
+        "Direct solvers are more robust for nonlinear problems and avoid "
+        "iterative solver tuning issues.",
+    ],
+}

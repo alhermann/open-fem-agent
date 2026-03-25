@@ -1,0 +1,68 @@
+"""DUNE-fem reaction-diffusion generators and knowledge."""
+
+
+def _reaction_diffusion_2d(params: dict) -> str:
+    """FORMAT TEMPLATE — values are defaults, determine appropriate values for your specific problem.
+
+    Reaction-diffusion with time-stepping — DUNE-fem."""
+    nx = params.get("nx", 64)
+    dt = params.get("dt", 0.01)
+    T_end = params.get("T_end", 1.0)
+    return f'''\
+"""Reaction-diffusion: Fisher-KPP equation — DUNE-fem"""
+from dune.grid import structuredGrid
+from dune.fem.space import lagrange
+from dune.fem.scheme import galerkin
+from dune.ufl import DirichletBC
+from ufl import TrialFunction, TestFunction, SpatialCoordinate, dot, grad, dx, conditional, lt
+import numpy as np
+import json
+
+gridView = structuredGrid([0, 0], [1, 1], [{nx}, {nx}])
+space = lagrange(gridView, order=1)
+x = SpatialCoordinate(space)
+
+u_n = space.interpolate(conditional(lt((x[0]-0.5)**2 + (x[1]-0.5)**2, 0.04), 1.0, 0.0), name="u")
+
+u = TrialFunction(space)
+v = TestFunction(space)
+dt = {dt}
+D = 0.01
+
+# Implicit Euler: (u - u_n)/dt - D*laplacian(u) + u*(u-1) = 0
+# Linearized: (u/dt + D*grad(u)*grad(v)) = u_n/dt + source
+a = (u * v / dt + D * dot(grad(u), grad(v))) * dx
+b = (u_n * v / dt + u_n * (1.0 - u_n) * v) * dx
+
+dbc = DirichletBC(space, 0)
+scheme = galerkin([a == b, dbc], solver="cg")
+
+t = 0.0
+for step in range(int({T_end}/{dt})):
+    scheme.solve(target=u_n)
+    t += dt
+
+vals = np.array(u_n.as_numpy)
+print(f"Reaction-diffusion: t={{t:.4f}}, max={{vals.max():.6f}}")
+gridView.writeVTK("result", pointdata={{"concentration": u_n}})
+summary = {{"time": t, "max_value": float(vals.max()), "n_dofs": len(vals)}}
+with open("results_summary.json", "w") as f:
+    json.dump(summary, f, indent=2)
+'''
+
+
+KNOWLEDGE = {
+    "reaction_diffusion": {
+        "description": "Reaction-diffusion (Fisher-KPP and other reaction-diffusion systems)",
+        "solver": "Implicit Euler time-stepping with Newton linearization",
+        "pitfalls": [
+            "Nonlinear reaction term linearized by DUNE's Newton solver automatically",
+            "For stiff reactions: use implicit time stepping (backward Euler or DIRK)",
+            "Multi-component systems (e.g., spiral waves): require 2+ coupled fields",
+        ],
+    },
+}
+
+GENERATORS = {
+    "reaction_diffusion_2d": _reaction_diffusion_2d,
+}

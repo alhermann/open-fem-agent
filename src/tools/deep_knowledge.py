@@ -1,0 +1,2109 @@
+"""
+MCP tools for deep, comprehensive domain knowledge across ALL backends.
+
+This is the brain of the agent — it knows weak forms, material libraries,
+solver configurations, pitfalls, element catalogs, and best practices for
+every supported FEM code. This is what makes Open FEM Agent genuinely useful
+compared to a generic LLM.
+"""
+
+import json
+from mcp.server.fastmcp import FastMCP
+from core.registry import get_backend, available_backends
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4C MULTIPHYSICS — COMPREHENSIVE DOMAIN KNOWLEDGE
+# Ported from 4c-ai-interface generators (9 physics modules, 30+ material types)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_4C_KNOWLEDGE = {
+    "scalar_transport": {
+        "description": "Solves advection-diffusion equation for scalar transport. Special cases: Poisson (stationary, zero velocity), heat conduction, SUPG-stabilised advection.",
+        "problem_type": "Scalar_Transport",
+        "required_sections": ["PROBLEM TYPE", "SCALAR TRANSPORT DYNAMIC", "SOLVER 1", "MATERIALS", "TRANSPORT GEOMETRY"],
+        "materials": {
+            "MAT_scatra": {"DIFFUSIVITY": "Isotropic diffusion coefficient > 0 (typical 0.01-100)"},
+            "MAT_Fourier": {"CAPA": "Volumetric heat capacity (rho*c_p) > 0", "CONDUCT": "Thermal conductivity (YAML: constant: [value]) > 0"},
+        },
+        "time_integration": {
+            "TIMEINTEGR": "Stationary | BDF2 | OneStepTheta",
+            "SOLVERTYPE": "linear_full (linear) | nonlinear (nonlinear terms)",
+            "VELOCITYFIELD": "zero (pure diffusion) | function (prescribed) | Navier_Stokes",
+        },
+        "solver": {"small": "UMFPACK (direct, ~50k DOFs)", "large": "Belos + MueLu (iterative, scalable)"},
+        "pitfalls": [
+            "Section name is 'SCALAR TRANSPORT DYNAMIC', NOT 'SCATRA DYNAMIC'",
+            "VELOCITYFIELD must be 'zero' (not omitted) for pure diffusion",
+            "VTK path: SCALAR TRANSPORT DYNAMIC/RUNTIME VTK OUTPUT (NOT IO/RUNTIME VTK OUTPUT/SCATRA)",
+            "Geometry section: TRANSPORT GEOMETRY with TRANSP element category",
+            "NUMDOF=1, all arrays (ONOFF/VAL/FUNCT) have exactly 1 entry",
+        ],
+        "variants": ["poisson_2d", "heat_transient_2d"],
+    },
+    "solid_mechanics": {
+        "description": "Quasi-static structural problems. DYNAMICTYPE: Statics, small/large deformation, 2D (WALL) / 3D (SOLID).",
+        "problem_type": "Structure",
+        "required_sections": ["PROBLEM TYPE", "STRUCTURAL DYNAMIC", "SOLVER 1", "MATERIALS", "STRUCTURE GEOMETRY"],
+        "materials": {
+            "MAT_Struct_StVenantKirchhoff": {"YOUNG": "> 0 (steel 210e3 MPa)", "NUE": "0 < nu < 0.5", "DENS": "Optional for statics"},
+            "MAT_ElastHyper + ELAST_CoupNeoHooke": {"NUMMAT": "1", "MATIDS": "[id]", "DENS": "> 0"},
+            "MAT_Struct_PlasticNlnLogNeoHooke": {"YOUNG": "> 0", "NUE": "0 < nu < 0.5", "YIELD": "Initial yield > 0", "SATHARDENING": ">= 0", "HARDEXPO": "> 0"},
+        },
+        "time_integration": {
+            "DYNAMICTYPE": "Statics (quasi-static, incremental loading)",
+            "KINEM": "linear (small def) vs nonlinear (large def)",
+            "MAXITER": "1 for linear, 20-50 for nonlinear",
+            "TOLDISP": "1e-6 to 1e-10", "TOLRES": "1e-6 to 1e-10",
+        },
+        "solver": {"small": "UMFPACK (direct, ~50k DOFs)", "large": "Belos + MueLu (GMRES + AMG)"},
+        "pitfalls": [
+            "KINEM must match material: Neo-Hookean/plasticity REQUIRE nonlinear",
+            "MAXITER=1 only for truly linear problems",
+            "HEX8 suffers locking — use TECH: eas_full, fbar, or higher-order elements",
+            "2D uses WALL category (not SOLID), requires THICK and STRESS_STRAIN",
+            "Neumann BCs have NUMDOF: 6 (forces + moments)",
+        ],
+        "variants": ["linear_2d", "nonlinear_3d"],
+    },
+    "fluid": {
+        "description": "Incompressible Navier-Stokes with SUPG/PSPG stabilisation. Fixed Eulerian (NA: Euler) or ALE (for FSI).",
+        "problem_type": "Fluid",
+        "required_sections": ["PROBLEM TYPE", "PROBLEM SIZE", "FLUID DYNAMIC", "SOLVER 1", "MATERIALS", "FLUID GEOMETRY"],
+        "materials": {
+            "MAT_fluid": {"DYNVISCOSITY": "Dynamic viscosity [Pa*s] > 0 (water 1e-3, air 1.8e-5)", "DENSITY": "Fluid density [kg/m^3] > 0 (water 1000, air 1.2)"},
+        },
+        "time_integration": {
+            "schemes": ["Np_Gen_Alpha (RECOMMENDED)", "BDF2", "OneStepTheta", "Stationary"],
+            "TIMESTEP": "Time step size", "NUMSTEP": "Number of steps", "ITEMAX": "Max nonlinear iters (default 10)",
+        },
+        "solver": {"small_2d": "UMFPACK (< ~50k DOFs)", "large_or_3d": "Belos with block preconditioner"},
+        "pitfalls": [
+            "NUMDOF INCLUDES pressure: 3 in 2D (vx,vy,p), 4 in 3D (vx,vy,vz,p)",
+            "Stabilisation (SUPG/PSPG) critical — without it, equal-order elements oscillate",
+            "Fully Dirichlet velocity: pressure up to constant — PIN at one node",
+            "FLUID GEOMETRY uses FLUID category (not SOLID)",
+            "Use NA: Euler for pure fluid, NA: ALE only for FSI mesh motion",
+        ],
+        "variants": ["channel_2d", "cavity_2d"],
+    },
+    "fsi": {
+        "description": "Monolithic/partitioned coupling of incompressible Navier-Stokes with geometrically nonlinear structures via ALE mesh motion. Most complex problem type in 4C.",
+        "problem_type": "Fluid_Structure_Interaction",
+        "required_sections": [
+            "PROBLEM TYPE", "STRUCTURAL DYNAMIC", "STRUCTURAL DYNAMIC/GENALPHA",
+            "FLUID DYNAMIC", "ALE DYNAMIC", "FSI DYNAMIC", "FSI DYNAMIC/MONOLITHIC SOLVER",
+            "SOLVER 1, 2, 3", "MATERIALS", "STRUCTURE GEOMETRY", "FLUID GEOMETRY",
+            "CLONING MATERIAL MAP", "DESIGN FSI COUPLING CONDITIONS",
+        ],
+        "materials": {
+            "MAT_fluid": "Newtonian (DYNVISCOSITY, DENSITY)",
+            "MAT_ElastHyper": "Hyperelastic structure (Neo-Hooke)",
+            "ALE clone": "Spring-based ALE via CLONING MATERIAL MAP",
+        },
+        "coupling": {
+            "recommended": "iter_mortar_monolithicfluidsplit",
+            "alternatives": ["iter_monolithicfluidsplit", "iter_stagg_AITKEN_rel_force"],
+        },
+        "pitfalls": [
+            "Fluid MUST use NA: ALE (NOT Euler!) for FSI",
+            "ALE Dirichlet BCs on ALL outer fluid boundaries (not FSI interface) — missing = mesh distortion",
+            "CLONING MATERIAL MAP is MANDATORY (fluid mat → ALE pseudo-mat)",
+            "SHAPEDERIVATIVES: true in MONOLITHIC SOLVER",
+            "Each field (structure, fluid, ALE) needs own SOLVER N entry",
+            "2D: DESIGN FSI COUPLING LINE CONDITIONS, 3D: SURF CONDITIONS",
+            "Structure NUMDOF = dim, Fluid NUMDOF = dim+1 (includes pressure)",
+        ],
+        "variants": ["fsi_2d"],
+    },
+    "beams": {
+        "description": "Geometrically exact beam elements: BEAM3R (Reissner, shear-deformable), BEAM3EB (Euler-Bernoulli), BEAM3K (Kirchhoff). CRITICAL: MUST use inline mesh (NODE COORDS + STRUCTURE ELEMENTS), NOT Exodus.",
+        "problem_type": "Structure",
+        "required_sections": ["PROBLEM TYPE", "STRUCTURAL DYNAMIC", "SOLVER 1", "MATERIALS", "NODE COORDS", "STRUCTURE ELEMENTS", "DNODE-NODE TOPOLOGY", "DLINE-NODE TOPOLOGY"],
+        "beam_types": {
+            "BEAM3R": {"name": "Reissner (shear-deformable)", "topologies": ["LINE2", "LINE3", "LINE4"], "dofs": "6 or 9 (HERMITE)"},
+            "BEAM3EB": {"name": "Euler-Bernoulli (torsion-free)", "topologies": ["LINE2"], "dofs": "6"},
+            "BEAM3K": {"name": "Kirchhoff (with torsion)", "topologies": ["LINE2", "LINE3"], "dofs": "6 or 7"},
+        },
+        "materials": {
+            "MAT_BeamReissnerElastHyper": {"YOUNG": "> 0", "SHEARMOD": "G = E/(2(1+nu))", "CROSSAREA": "> 0", "MOMINPOL": "J", "MOMIN2": "I_yy", "MOMIN3": "I_zz", "SHEARCORR": "circle: 6/7, rect: 5/6"},
+        },
+        "pitfalls": [
+            "Beams CANNOT use Exodus — must use inline NODE COORDS + STRUCTURE ELEMENTS",
+            "TRIADS required for BEAM3R/K (initial orientation)",
+            "LINE3: endpoint1-endpoint2-midpoint ordering (NOT sequential!)",
+            "GenAlphaLieGroup REQUIRED for dynamics (not standard GenAlpha)",
+            "MASSLIN: rotations required with GenAlphaLieGroup",
+            "Cross-section properties must be mutually consistent",
+        ],
+        "variants": ["cantilever_static", "cantilever_dynamic"],
+    },
+    "contact": {
+        "description": "Mortar-based contact between deformable bodies. Penalty / Uzawa / Nitsche. Adds CONTACT DYNAMIC + MORTAR COUPLING on top of structure.",
+        "problem_type": "Structure",
+        "required_sections": ["PROBLEM TYPE", "STRUCTURAL DYNAMIC", "MORTAR COUPLING", "CONTACT DYNAMIC", "SOLVER 1", "MATERIALS", "STRUCTURE GEOMETRY", "DESIGN SURF MORTAR CONTACT CONDITIONS 3D"],
+        "materials": {
+            "MAT_Struct_StVenantKirchhoff": {"YOUNG": "> 0", "NUE": "0 < nu < 0.5", "DENS": ">= 0 (0 for quasi-static)"},
+            "MAT_ElastHyper": "For large-deformation contact",
+        },
+        "strategies": {
+            "Penalty": "Stiff spring on penetration. PENALTYPARAM (1e2-1e5): too low=penetration, too high=ill-conditioning",
+            "Uzawa": "Augmented Lagrangian. Accurate, expensive.",
+            "Nitsche": "Variationally consistent penalty. Accuracy + simplicity.",
+        },
+        "pitfalls": [
+            "Both MORTAR COUPLING and CONTACT DYNAMIC required — missing either crashes/ignores",
+            "Each interface needs BOTH Slave and Master with same InterfaceID",
+            "PENALTYPARAM tuning critical: start 1e3, adjust by penetration depth",
+            "Quasi-static MUST use load stepping — full load in 1 step → Newton divergence",
+            "Slave surface = finer mesh or softer body",
+            "KINEM must be nonlinear for correct gap computation",
+            "Contact surfaces must NOT overlap initially",
+        ],
+        "variants": ["penalty_3d"],
+    },
+    "structural_dynamics": {
+        "description": "Time-dependent structural: impact, vibration, wave propagation. GenAlpha (implicit, recommended) or ExplEuler.",
+        "problem_type": "Structure",
+        "required_sections": ["PROBLEM TYPE", "STRUCTURAL DYNAMIC", "SOLVER 1", "MATERIALS", "STRUCTURE GEOMETRY"],
+        "materials": {
+            "MAT_Struct_StVenantKirchhoff": {"YOUNG": "> 0", "NUE": "0 < nu < 0.5", "DENS": "MANDATORY > 0 for dynamics (zero = singular mass matrix!)"},
+            "MAT_ElastHyper + ELAST_CoupNeoHooke": {"YOUNG": "> 0", "NUE": "0 < nu < 0.5", "DENS": "> 0 in wrapper"},
+        },
+        "time_integration": {
+            "GenAlpha": "Implicit, 2nd order, RHO_INF [0,1]: 1=energy-conserving, 0=max damping (typical 0.8-0.9)",
+            "GenAlphaLieGroup": "Lie-group variant for beams (rotational DOFs on SO(3))",
+            "ExplEuler": "Explicit, CFL-constrained (dt < h/c where c=sqrt(E/rho))",
+        },
+        "damping": {"Rayleigh": "M_DAMP (low freq) + K_DAMP (high freq)", "None": "Numerical dissipation only"},
+        "pitfalls": [
+            "DENS MANDATORY and > 0 — zero/missing = zero mass matrix (singular)",
+            "Time step must resolve highest frequency of interest",
+            "Explicit: CFL violation = immediate divergence",
+            "RHO_INF=1: energy-conserving but may show spurious ringing — reduce to 0.8",
+        ],
+        "variants": ["genalpha_2d"],
+    },
+    "particle_pd": {
+        "description": "Bond-based peridynamics for fracture. Non-local integral equations. CRITICAL: SPH section MANDATORY even for pure PD (else 'pd_neighbor_pairs=0' crash).",
+        "problem_type": "Particle",
+        "required_sections": ["PROBLEM TYPE", "IO", "BINNING STRATEGY", "PARTICLE DYNAMIC", "PARTICLE DYNAMIC/SPH", "PARTICLE DYNAMIC/PD", "MATERIALS", "PARTICLES"],
+        "materials": {
+            "MAT_ParticlePD": {"INITRADIUS": "dx/2", "INITDENSITY": "e.g. 8e-3 g/mm^3 steel", "YOUNG": "e.g. 190e3 MPa steel", "CRITICAL_STRETCH": "Bond break 0.001-0.05"},
+            "MAT_ParticleSPHBoundary": {"INITRADIUS": "Same as PD", "INITDENSITY": "Can be 1 (rigid)"},
+        },
+        "solver": "Explicit only (VelocityVerlet). dt < dx/sqrt(E/rho), safety factor 0.5.",
+        "pre_cracks": "Visibility condition: bonds crossing line segments broken at init. Format: 'x1 y1 x2 y2 ; x3 y3 x4 y4'",
+        "pitfalls": [
+            "PARTICLE DYNAMIC/SPH section MANDATORY for PD — missing causes crash",
+            "DOMAINBOUNDINGBOX must enclose ALL particles including moving impactor",
+            "Use boundaryphase (NOT rigidphase) for rigid impactors",
+            "Horizon ratio m=delta/dx >= 3 for convergence",
+            "BIN_SIZE_LOWER_BOUND > horizon (else neighbors missed)",
+            "Bond-based PD restricts Poisson's ratio: nu=0.25 (2D), nu=1/3 (3D)",
+            "CFL violation = UNSTABLE",
+        ],
+        "unit_systems": {"mm_ms_g": "Length=mm, Time=ms, Mass=g, Stress=MPa", "SI": "Length=m, Time=s, Mass=kg, Stress=Pa"},
+        "variants": ["plate_2d", "impact_2d"],
+    },
+    "particle_sph": {
+        "description": "Smoothed Particle Hydrodynamics for free-surface flows (dam break, sloshing). Meshfree Lagrangian, kernel-weighted summation.",
+        "problem_type": "Particle",
+        "required_sections": ["PROBLEM TYPE", "IO", "BINNING STRATEGY", "PARTICLE DYNAMIC", "PARTICLE DYNAMIC/SPH", "MATERIALS", "PARTICLES"],
+        "materials": {
+            "MAT_ParticleSPHFluid": {
+                "INITRADIUS": "Kernel support (3*dx for QuinticSpline)", "INITDENSITY": "Reference density",
+                "BULK_MODULUS": "Artificial (>> rho*v_max^2)", "DYNAMIC_VISCOSITY": "Physical viscosity",
+                "ARTIFICIAL_VISCOSITY": "Monaghan shock capturing (0-1, typical 0.1)",
+                "BACKGROUNDPRESSURE": "> 0 for free-surface", "EXPONENT": "Tait EOS (1=linear, 7=water)",
+            },
+        },
+        "solver": "Explicit (VelocityVerlet). CFL: dt < 0.25*h/c_s where c_s=sqrt(K/rho).",
+        "pitfalls": [
+            "KERNEL_SPACE_DIM MUST match physical dimension — mismatch = wrong normalization",
+            "INITRADIUS is kernel support radius (3*dx for QuinticSpline), NOT half spacing",
+            "DOMAINBOUNDINGBOX must accommodate fluid expansion/splashing",
+            "BULK_MODULUS >= 100*rho*v_max^2 for <1% density variation",
+            "Boundary particles MUST use same INITDENSITY as fluid (Adami formulation)",
+            "BACKGROUNDPRESSURE > 0 for free-surface problems",
+        ],
+        "variants": ["poiseuille_2d", "dam_break_2d"],
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FENICSX (DOLFINX) — COMPREHENSIVE DOMAIN KNOWLEDGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def get_deep_fenics_knowledge(physics: str) -> dict:
+    """Get deep FEniCSx knowledge for a specific physics type."""
+    return _FENICS_KNOWLEDGE.get(physics, {})
+
+
+_FENICS_KNOWLEDGE = {
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ELEMENT CATALOG — Complete Basix/UFL element families
+    # ═══════════════════════════════════════════════════════════════════════════
+    "element_catalog": {
+        "description": "Complete catalog of finite element families available in FEniCSx via Basix. Elements are created with basix.ufl.element() or basix.ufl.blocked_element().",
+        "basix_element_families": {
+            "P (Lagrange)": {
+                "basix_name": "basix.ElementFamily.P",
+                "ufl_name": "'Lagrange' or 'P'",
+                "continuity": "C0 (continuous across facets)",
+                "orders": "1, 2, 3, ... (arbitrary order)",
+                "cell_types": "interval, triangle, quadrilateral, tetrahedron, hexahedron, prism, pyramid",
+                "api": "basix.ufl.element('Lagrange', cell, degree)",
+                "variants": {
+                    "equispaced": "basix.LagrangeVariant.equispaced (equally spaced points, default for low order)",
+                    "gll_warped": "basix.LagrangeVariant.gll_warped (GLL points, lower Lebesgue constant for high order)",
+                    "gll_isaac": "basix.LagrangeVariant.gll_isaac (GLL with Isaac warp on simplices)",
+                    "gll_centroid": "basix.LagrangeVariant.gll_centroid (GLL with centroid warp)",
+                    "chebyshev_warped": "basix.LagrangeVariant.chebyshev_warped (Chebyshev points)",
+                    "chebyshev_isaac": "basix.LagrangeVariant.chebyshev_isaac",
+                    "chebyshev_centroid": "basix.LagrangeVariant.chebyshev_centroid",
+                },
+                "notes": "Use gll_warped for degree >= 5 to avoid Runge phenomenon. DG variant: 'DG' or basix.ElementFamily.P with discontinuous=True.",
+            },
+            "DG (Discontinuous Lagrange)": {
+                "basix_name": "basix.ElementFamily.P (with discontinuous=True)",
+                "ufl_name": "'DG' or 'Discontinuous Lagrange'",
+                "continuity": "Discontinuous (no inter-element continuity)",
+                "orders": "0, 1, 2, ... (arbitrary order, DG0 = piecewise constant)",
+                "api": "basix.ufl.element('DG', cell, degree)",
+                "use_cases": "Advection-dominated problems, conservation laws, DG methods, interior penalty",
+            },
+            "RT (Raviart-Thomas)": {
+                "basix_name": "basix.ElementFamily.RT",
+                "ufl_name": "'RT' or 'Raviart-Thomas'",
+                "continuity": "H(div) — normal component continuous across facets",
+                "orders": "1, 2, 3, ...",
+                "cell_types": "triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('RT', cell, degree)",
+                "use_cases": "Mixed Poisson (Darcy flow), flux-conservative methods",
+                "notes": "Pair with DG(k-1) for stable mixed Poisson. Normal component preserved by contravariant Piola map.",
+            },
+            "BDM (Brezzi-Douglas-Marini)": {
+                "basix_name": "basix.ElementFamily.BDM",
+                "ufl_name": "'BDM' or 'Brezzi-Douglas-Marini'",
+                "continuity": "H(div) — normal component continuous",
+                "orders": "1, 2, 3, ...",
+                "cell_types": "triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('BDM', cell, degree)",
+                "notes": "Full polynomial space on each cell (more DOFs than RT but better approximation).",
+            },
+            "N1E (Nedelec 1st kind)": {
+                "basix_name": "basix.ElementFamily.N1E",
+                "ufl_name": "'N1curl' or 'Nedelec 1st kind H(curl)'",
+                "continuity": "H(curl) — tangential component continuous across facets",
+                "orders": "1, 2, 3, ...",
+                "cell_types": "triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('N1curl', cell, degree)",
+                "use_cases": "Maxwell equations, electromagnetic wave propagation, curl-curl problems",
+                "notes": "Tangential component preserved by covariant Piola map. Essential for electromagnetics.",
+            },
+            "N2E (Nedelec 2nd kind)": {
+                "basix_name": "basix.ElementFamily.N2E",
+                "ufl_name": "'N2curl' or 'Nedelec 2nd kind H(curl)'",
+                "continuity": "H(curl)",
+                "orders": "1, 2, ...",
+                "cell_types": "triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('N2curl', cell, degree)",
+                "notes": "Full polynomial space (more DOFs than N1E, better approximation).",
+            },
+            "CR (Crouzeix-Raviart)": {
+                "basix_name": "basix.ElementFamily.CR",
+                "ufl_name": "'CR' or 'Crouzeix-Raviart'",
+                "continuity": "Nonconforming — continuous at facet midpoints only",
+                "orders": "1 only",
+                "cell_types": "triangle, tetrahedron, quadrilateral, hexahedron",
+                "api": "basix.ufl.element('CR', cell, 1)",
+                "use_cases": "Stokes (CR/DG0 pair is inf-sup stable), nonconforming methods",
+            },
+            "bubble": {
+                "basix_name": "basix.ElementFamily.bubble",
+                "ufl_name": "'Bubble'",
+                "continuity": "Zero on element boundaries (vanishes on facets)",
+                "orders": "Depends on cell type (3 for triangle, 4 for tet, 2 for quad, 3 for hex)",
+                "cell_types": "triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('Bubble', cell, degree)",
+                "use_cases": "MINI element for Stokes (Lagrange + Bubble enrichment), stabilization",
+            },
+            "Regge": {
+                "basix_name": "basix.ElementFamily.Regge",
+                "ufl_name": "'Regge'",
+                "continuity": "Tangent-tangent component continuous",
+                "orders": "0, 1, 2, ...",
+                "cell_types": "triangle, tetrahedron",
+                "api": "basix.ufl.element('Regge', cell, degree)",
+                "use_cases": "Linearized general relativity, metric tensors, elasticity complexes",
+            },
+            "HHJ (Hellan-Herrmann-Johnson)": {
+                "basix_name": "basix.ElementFamily.HHJ",
+                "ufl_name": "'HHJ'",
+                "continuity": "Normal-normal component continuous",
+                "orders": "0, 1, 2, ...",
+                "cell_types": "triangle",
+                "api": "basix.ufl.element('HHJ', cell, degree)",
+                "use_cases": "Kirchhoff plates, biharmonic equation (symmetric tensor field for moments)",
+            },
+            "serendipity": {
+                "basix_name": "basix.ElementFamily.serendipity",
+                "ufl_name": "'S' or 'serendipity'",
+                "continuity": "C0",
+                "orders": "1, 2, 3, ...",
+                "cell_types": "quadrilateral, hexahedron",
+                "api": "basix.ufl.element('S', cell, degree)",
+                "notes": "Fewer DOFs than tensor-product Lagrange on quads/hexes. S2 has no interior node on quad.",
+            },
+            "DPC (Discontinuous Piecewise Complete)": {
+                "basix_name": "basix.ElementFamily.DPC",
+                "ufl_name": "'DPC'",
+                "continuity": "Discontinuous",
+                "orders": "0, 1, 2, ...",
+                "cell_types": "quadrilateral, hexahedron",
+                "api": "basix.ufl.element('DPC', cell, degree)",
+                "notes": "Complete polynomial on quads/hexes (not tensor-product). Used in compatible DG schemes.",
+            },
+            "Hermite": {
+                "basix_name": "basix.ElementFamily.Hermite",
+                "ufl_name": "'Hermite'",
+                "continuity": "C1 (value and gradient continuous at vertices)",
+                "orders": "3",
+                "cell_types": "triangle, tetrahedron",
+                "api": "basix.ufl.element('Hermite', cell, 3)",
+                "use_cases": "Beam/plate problems requiring C1 continuity, Kirchhoff theory",
+            },
+            "iso (isoparametric/macro)": {
+                "basix_name": "basix.ElementFamily.iso",
+                "ufl_name": "'iso'",
+                "continuity": "C0 (piecewise on sub-cells)",
+                "orders": "2, 3, ...",
+                "cell_types": "interval, triangle, quadrilateral, tetrahedron, hexahedron",
+                "api": "basix.ufl.element('iso', cell, degree)",
+                "notes": "Macro element: cell is split into sub-cells, lower-order polynomial on each. Fewer DOFs than standard high-order.",
+            },
+        },
+        "compound_elements": {
+            "blocked_element": {
+                "api": "basix.ufl.blocked_element(sub_element, shape=(gdim,))",
+                "use": "Vector/tensor function spaces from scalar elements. E.g., vector Lagrange for elasticity.",
+                "example": "Ve = basix.ufl.element('Lagrange', cell, 2); basix.ufl.blocked_element(Ve, shape=(3,))",
+            },
+            "mixed_element": {
+                "api": "basix.ufl.mixed_element([el1, el2, ...])",
+                "use": "Combine different elements for mixed formulations (Taylor-Hood, Stokes, etc.)",
+                "example": "P2 = basix.ufl.element('Lagrange', cell, 2, shape=(gdim,)); P1 = basix.ufl.element('Lagrange', cell, 1); ME = basix.ufl.mixed_element([P2, P1])",
+            },
+            "enriched_element": {
+                "api": "basix.ufl.enriched_element([el1, el2])",
+                "use": "Combine elements to enrich approximation space. Used for MINI element.",
+                "example": "P1 = basix.ufl.element('Lagrange', cell, 1, shape=(gdim,)); B = basix.ufl.element('Bubble', cell, 3, shape=(gdim,)); MINI = basix.ufl.enriched_element([P1, B])",
+            },
+        },
+        "cell_types": {
+            "interval": "1D line segment",
+            "triangle": "2D simplex (3 vertices)",
+            "quadrilateral": "2D quad (4 vertices)",
+            "tetrahedron": "3D simplex (4 vertices)",
+            "hexahedron": "3D brick (8 vertices)",
+            "prism": "3D triangular prism (6 vertices)",
+            "pyramid": "3D pyramid (5 vertices)",
+        },
+        "pitfalls": [
+            "In dolfinx >= 0.8, use basix.ufl.element() NOT ufl.FiniteElement() (legacy UFL deprecated)",
+            "For vector elements use blocked_element or shape= parameter, NOT VectorElement (deprecated)",
+            "For mixed spaces use basix.ufl.mixed_element, NOT ufl.MixedElement (deprecated)",
+            "Element variant matters for high order (>= 5): use gll_warped to avoid ill-conditioning",
+            "Not all element families support all cell types — check Basix docs for compatibility",
+            "Bubble element minimum degree depends on cell type: 3 for triangle, 4 for tet",
+            "Serendipity and DPC elements only available on quads/hexes",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MESH CAPABILITIES
+    # ═══════════════════════════════════════════════════════════════════════════
+    "mesh_catalog": {
+        "description": "Complete mesh creation, import, and manipulation capabilities in DOLFINx.",
+        "built_in_meshes": {
+            "create_unit_square": {
+                "api": "dolfinx.mesh.create_unit_square(MPI.COMM_WORLD, nx, ny, cell_type=CellType.triangle)",
+                "geometry": "[0,1] x [0,1]",
+                "cell_types": "CellType.triangle (default), CellType.quadrilateral",
+            },
+            "create_unit_cube": {
+                "api": "dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, nx, ny, nz, cell_type=CellType.tetrahedron)",
+                "geometry": "[0,1]^3",
+                "cell_types": "CellType.tetrahedron (default), CellType.hexahedron",
+            },
+            "create_rectangle": {
+                "api": "dolfinx.mesh.create_rectangle(MPI.COMM_WORLD, [p0, p1], [nx, ny], cell_type=...)",
+                "geometry": "Arbitrary rectangle [p0, p1]",
+                "cell_types": "CellType.triangle, CellType.quadrilateral",
+            },
+            "create_box": {
+                "api": "dolfinx.mesh.create_box(MPI.COMM_WORLD, [p0, p1], [nx, ny, nz], cell_type=...)",
+                "geometry": "Arbitrary box [p0, p1]",
+                "cell_types": "CellType.tetrahedron, CellType.hexahedron",
+            },
+            "create_unit_interval": {
+                "api": "dolfinx.mesh.create_unit_interval(MPI.COMM_WORLD, n)",
+                "geometry": "[0,1] interval",
+            },
+            "create_interval": {
+                "api": "dolfinx.mesh.create_interval(MPI.COMM_WORLD, n, [a, b])",
+                "geometry": "[a,b] interval",
+            },
+        },
+        "gmsh_integration": {
+            "api_0_9": "dolfinx.io.gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, rank=0)",
+            "api_0_10": "dolfinx.io.gmsh.model_to_mesh(gmsh.model, MPI.COMM_WORLD, rank=0) — returns MeshData dataclass",
+            "read_from_msh": "dolfinx.io.gmshio.read_from_msh('file.msh', MPI.COMM_WORLD, rank=0)",
+            "workflow": "1. Build geometry with gmsh Python API, 2. Mesh with gmsh.model.mesh.generate(dim), 3. Convert with model_to_mesh()",
+            "returns": "MeshData with mesh, cell_tags (codim 0), facet_tags (codim 1), ridge/peak tags, physical group lookup",
+            "notes": "Gmsh model processed on rank 0, DOLFINx mesh distributed across all ranks automatically.",
+        },
+        "xdmf_import": {
+            "read_mesh": "with dolfinx.io.XDMFFile(MPI.COMM_WORLD, 'mesh.xdmf', 'r') as f: mesh = f.read_mesh()",
+            "read_tags": "f.read_meshtags(mesh, name='facets')",
+            "notes": "Good for pre-generated meshes. Geometry order <= 2 supported.",
+        },
+        "vtkhdf_import": {
+            "api": "dolfinx.io.vtkhdf.read_mesh('mesh.vtkhdf', MPI.COMM_WORLD) — new in 0.10",
+            "notes": "Kitware's future-proof format. Transition from XDMF has started.",
+        },
+        "mesh_refinement": {
+            "uniform_refine": "dolfinx.mesh.uniform_refine(mesh) — refines all cells uniformly",
+            "refine": "dolfinx.mesh.refine(mesh, edges=None) — selective refinement of marked edges",
+            "partitioner": "Optional custom partitioner for distributing refined mesh",
+        },
+        "mesh_operations": {
+            "create_submesh": "dolfinx.mesh.create_submesh(mesh, dim, entities) — extract subdomain mesh",
+            "meshtags": "dolfinx.mesh.meshtags(mesh, dim, entities, values) — tag entities with integer markers",
+            "locate_entities": "dolfinx.mesh.locate_entities(mesh, dim, marker_fn) — find entities satisfying geometric condition",
+            "locate_entities_boundary": "dolfinx.mesh.locate_entities_boundary(mesh, dim, marker_fn) — boundary entities only",
+            "exterior_facet_indices": "dolfinx.mesh.exterior_facet_indices(mesh.topology) — all exterior facets",
+        },
+        "pitfalls": [
+            "MUST pass MPI.COMM_WORLD (or appropriate communicator) to all mesh creation functions",
+            "Gmsh model_to_mesh: module renamed from gmshio to gmsh in dolfinx 0.10",
+            "For parallel: gmsh model built on rank 0 only (if gmsh.isInitialized())",
+            "Topology connectivity must be created before use: mesh.topology.create_connectivity(dim1, dim2)",
+            "Branching meshes (T-joints, 3+ cells per facet) supported since 0.10",
+            "create_unit_square default is triangles — use CellType.quadrilateral explicitly for quads",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SOLVER CATALOG
+    # ═══════════════════════════════════════════════════════════════════════════
+    "solver_catalog": {
+        "description": "Complete PETSc/SLEPc solver and preconditioner catalog for DOLFINx.",
+        "linear_solvers": {
+            "high_level_api": {
+                "LinearProblem": {
+                    "api": "dolfinx.fem.petsc.LinearProblem(a, L, bcs=bcs, petsc_options={...})",
+                    "usage": "Simplest interface: problem.solve() returns Function",
+                    "0_10_note": "Now supports blocked problems via kind='mpi' or kind='nest'",
+                },
+            },
+            "direct_solvers": {
+                "mumps": {"options": {"ksp_type": "preonly", "pc_type": "lu", "pc_factor_mat_solver_type": "mumps"}, "use": "General sparse, parallel, recommended default direct solver"},
+                "superlu_dist": {"options": {"ksp_type": "preonly", "pc_type": "lu", "pc_factor_mat_solver_type": "superlu_dist"}, "use": "Alternative parallel direct solver"},
+                "umfpack": {"options": {"ksp_type": "preonly", "pc_type": "lu", "pc_factor_mat_solver_type": "umfpack"}, "use": "Sequential only, good for small problems"},
+            },
+            "iterative_solvers": {
+                "CG": {"options": {"ksp_type": "cg"}, "use": "Symmetric positive definite (Poisson, elasticity, heat)", "requires": "SPD matrix and SPD preconditioner"},
+                "GMRES": {"options": {"ksp_type": "gmres"}, "use": "Non-symmetric systems (advection, Navier-Stokes)", "notes": "Restarted, set ksp_gmres_restart for large problems"},
+                "BiCGStab": {"options": {"ksp_type": "bcgs"}, "use": "Non-symmetric alternative to GMRES"},
+                "MinRes": {"options": {"ksp_type": "minres"}, "use": "Symmetric indefinite (saddle-point: Stokes, mixed Poisson)"},
+                "Richardson": {"options": {"ksp_type": "richardson"}, "use": "Simple iteration, often as smoother"},
+            },
+            "preconditioners": {
+                "ILU": {"options": {"pc_type": "ilu"}, "use": "General-purpose incomplete LU (sequential)"},
+                "ICC": {"options": {"pc_type": "icc"}, "use": "Incomplete Cholesky for SPD systems (sequential)"},
+                "Jacobi": {"options": {"pc_type": "jacobi"}, "use": "Diagonal scaling, cheap, for DG mass matrices"},
+                "SOR": {"options": {"pc_type": "sor"}, "use": "Successive over-relaxation"},
+                "GAMG": {"options": {"pc_type": "gamg"}, "use": "PETSc native smoothed aggregation AMG — good for Poisson, elasticity", "notes": "Provide near-nullspace (rigid body modes) for elasticity"},
+                "hypre_boomeramg": {
+                    "options": {"pc_type": "hypre", "pc_hypre_type": "boomeramg"},
+                    "use": "Classical AMG via hypre — excellent for Poisson, good for elasticity",
+                    "tuning": {"pc_hypre_boomeramg_strong_threshold": "0.25 (2D) or 0.5-0.7 (3D)", "pc_hypre_boomeramg_agg_nl": "2-4 (aggressive coarsening levels)"},
+                },
+                "BDDC": {"options": {"pc_type": "bddc"}, "use": "Balancing domain decomposition by constraints — scalable parallel"},
+                "fieldsplit": {"options": {"pc_type": "fieldsplit"}, "use": "Block preconditioner for saddle-point (Stokes, mixed)"},
+            },
+        },
+        "nonlinear_solvers": {
+            "SNES_via_NonlinearProblem": {
+                "api_0_9": "problem = NonlinearProblem(F, u, bcs); solver = NewtonSolver(MPI.COMM_WORLD, problem)",
+                "api_0_10": "problem = dolfinx.fem.petsc.NonlinearProblem(F, u, bcs, petsc_options={...}); problem.solve()",
+                "note": "dolfinx.nls.petsc.NewtonSolver deprecated in 0.10 in favor of NonlinearProblem wrapping SNES directly",
+            },
+            "snes_types": {
+                "newtonls": {"options": {"snes_type": "newtonls"}, "description": "Newton with line search (default, most common)"},
+                "newtontr": {"options": {"snes_type": "newtontr"}, "description": "Newton with trust region (more robust for difficult problems)"},
+                "nrichardson": {"options": {"snes_type": "nrichardson"}, "description": "Nonlinear Richardson (fixed-point)"},
+                "ngmres": {"options": {"snes_type": "ngmres"}, "description": "Nonlinear GMRES (Anderson acceleration)"},
+            },
+            "convergence": {
+                "snes_atol": "Absolute tolerance on residual norm (default 1e-50, set to 1e-8 or 1e-10)",
+                "snes_rtol": "Relative tolerance (default 1e-8)",
+                "snes_stol": "Step tolerance for ||delta_x||/||x|| (default 1e-8)",
+                "snes_max_it": "Maximum nonlinear iterations (default 50)",
+                "snes_monitor": "Print convergence info (set to None/empty string)",
+            },
+            "custom_newton": {
+                "description": "Hand-written Newton loop for full control (jsdokken tutorial chapter 4)",
+                "approach": "Assemble F and J manually, solve J*du=-F, update u, check convergence",
+                "api": "dolfinx.fem.petsc.assemble_matrix(a), dolfinx.fem.petsc.assemble_vector(L), apply_lifting, set_bc",
+                "convergence_criterion": "'residual' (default) or 'incremental'",
+            },
+        },
+        "eigenvalue_solvers": {
+            "SLEPc_EPS": {
+                "api": "from slepc4py import SLEPc; eps = SLEPc.EPS().create(MPI.COMM_WORLD)",
+                "use": "Generalized eigenvalue problem A*x = lambda*B*x",
+                "methods": "krylovschur (default, recommended), arnoldi, lanczos, power, jd (Jacobi-Davidson)",
+                "spectral_transform": "ST for shift-and-invert to find eigenvalues near a target",
+                "demo": "Electromagnetic modal analysis (waveguide demo)",
+            },
+        },
+        "block_solvers": {
+            "description": "For saddle-point problems (Stokes, mixed Poisson)",
+            "assemble_matrix_block": "dolfinx.fem.petsc.assemble_matrix_block(a_block, bcs)",
+            "assemble_matrix_nest": "dolfinx.fem.petsc.assemble_matrix_nest(a_block, bcs)",
+            "nullspace": "Build nullspace for pressure (constant) or rigid body modes (elasticity), attach to matrix",
+        },
+        "alternative_backends": {
+            "pyamg": {
+                "api": "Convert DOLFINx matrix to scipy sparse, use pyamg.ruge_stuben_solver() or pyamg.smoothed_aggregation_solver()",
+                "note": "Serial only (not MPI-parallel), good for rapid prototyping",
+                "demo": "demo_pyamg.py",
+            },
+            "scipy": {
+                "api": "mat.to_scipy() to convert DOLFINx matrix, then use scipy.sparse.linalg",
+                "note": "Useful for interfacing with optimization (scipy.optimize)",
+            },
+        },
+        "pitfalls": [
+            "Always set petsc_options as dict: {'ksp_type': 'cg', 'pc_type': 'gamg'}",
+            "For elasticity AMG: MUST provide near-nullspace (6 rigid body modes in 3D) via setNearNullSpace()",
+            "For Stokes: pressure nullspace (constant) must be set via setNullSpace()",
+            "GAMG/hypre strong_threshold: 0.25 for 2D, 0.5-0.7 for 3D (wrong value = poor convergence)",
+            "Direct solvers fail silently for very large problems — check ksp_monitor for divergence",
+            "NewtonSolver deprecated in 0.10 — use NonlinearProblem.solve() instead",
+            "snes_atol default is 1e-50 (effectively disabled) — you MUST set it explicitly",
+        ],
+        "by_physics": {
+            "poisson": "CG + hypre/GAMG (or LU for small)",
+            "elasticity": "CG + GAMG with near-nullspace (or LU for small)",
+            "heat_transient": "CG + hypre per time step",
+            "stokes": "MinRes + fieldsplit (AMG for velocity block, mass matrix for Schur complement)",
+            "navier_stokes": "SNES newtonls + GMRES + AMG (or LU for small)",
+            "helmholtz": "GMRES + LU (complex-valued, direct often needed)",
+            "maxwell": "GMRES + AMS (from hypre) for H(curl) problems",
+            "cahn_hilliard": "SNES + LU per time step",
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BOUNDARY CONDITIONS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "boundary_conditions": {
+        "description": "Complete boundary condition types and API in DOLFINx.",
+        "dirichlet": {
+            "api": "dolfinx.fem.dirichletbc(value, dofs, V=None)",
+            "locate_topological": "dolfinx.fem.locate_dofs_topological(V, entity_dim, entities)",
+            "locate_geometrical": "dolfinx.fem.locate_dofs_geometrical(V, marker_fn)",
+            "component_wise": "V0, _ = V.sub(0).collapse(); dofs = locate_dofs_topological((V.sub(0), V0), fdim, facets)",
+            "enforcement": "Strong enforcement via lifting (modify RHS, zero rows/cols in matrix)",
+            "notes": "DOLFINx uses the lifting approach internally, not identity rows",
+        },
+        "neumann": {
+            "api": "L += g * v * ds(marker)",
+            "description": "Natural BC: specified flux, added as surface integral in weak form",
+            "notes": "Zero Neumann (insulated/free) = do nothing (natural condition). Non-zero: integrate over ds with marker.",
+        },
+        "robin": {
+            "api": "a += r * u * v * ds(marker); L += r * s * v * ds(marker)",
+            "description": "Mixed BC: -k*du/dn = r*(u - s) where r=transfer coefficient, s=ambient value",
+            "use_cases": "Convective heat transfer, radiation, absorbing boundary",
+        },
+        "periodic": {
+            "library": "dolfinx_mpc (extension by Jørgen S. Dokken)",
+            "api": "mpc = dolfinx_mpc.MultiPointConstraint(V); mpc.create_periodic_constraint_geometrical(V, indicator, relation, bcs, scale)",
+            "notes": "NOT built into DOLFINx core — requires separate dolfinx_mpc package",
+            "topological": "mpc.create_periodic_constraint_topological(V, meshtag, tag, relation, bcs, scale)",
+        },
+        "point_constraints": {
+            "approach": "Use locate_dofs_geometrical with a function checking point proximity",
+            "lagrange_multiplier": "Possible via real-valued function space (workaround for integral constraints)",
+        },
+        "outlet_do_nothing": {
+            "description": "Natural (do-nothing) BC at outlet: zero stress condition",
+            "api": "Simply do not specify any BC on the outlet boundary — it is naturally satisfied",
+        },
+        "pitfalls": [
+            "MUST create connectivity before locating boundary: mesh.topology.create_connectivity(fdim, tdim)",
+            "For sub-space BCs: locate_dofs_topological needs BOTH the sub-space AND collapsed sub-space as tuple",
+            "Periodic BCs require dolfinx_mpc extension — not natively in DOLFINx",
+            "Dirichlet value type must match: np.zeros(gdim) for vector, scalar for scalar space",
+            "For enclosed flows (all Dirichlet velocity): pin pressure at one DOF to remove nullspace",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # I/O AND OUTPUT
+    # ═══════════════════════════════════════════════════════════════════════════
+    "io_catalog": {
+        "description": "Complete I/O capabilities in DOLFINx for visualization, checkpointing, and data exchange.",
+        "vtx_writer": {
+            "api": "dolfinx.io.VTXWriter(MPI.COMM_WORLD, 'output.bp', [u], engine='BP4')",
+            "write": "writer.write(t)",
+            "close": "writer.close()",
+            "features": "Arbitrary-order Lagrange, time series, parallel",
+            "viewer": "ParaView (open .bp directory)",
+            "notes": "Requires ADIOS2. Best for Lagrange elements. VTXMeshPolicy controls mesh update frequency.",
+        },
+        "xdmf_file": {
+            "api": "dolfinx.io.XDMFFile(MPI.COMM_WORLD, 'output.xdmf', 'w')",
+            "write_mesh": "f.write_mesh(mesh)",
+            "write_function": "f.write_function(u, t)",
+            "read_mesh": "f.read_mesh()",
+            "features": "XML+HDF5, parallel, read/write meshes and functions",
+            "notes": "Geometry order <= 2 supported. Good for meshes. For functions, VTX preferred.",
+        },
+        "vtkhdf": {
+            "api": "dolfinx.io.vtkhdf.read_mesh('file.vtkhdf', comm) — new in 0.10",
+            "notes": "Kitware's future format. Reading supported, writing in progress.",
+        },
+        "checkpointing": {
+            "library": "adios4dolfinx (extension by Jørgen S. Dokken)",
+            "api": "adios4dolfinx.write_mesh(mesh, filename); adios4dolfinx.write_function(u, filename)",
+            "read": "adios4dolfinx.read_mesh(filename, comm); adios4dolfinx.read_function(V, filename)",
+            "features": "N-to-M checkpointing (write on N ranks, read on M ranks), function + mesh + meshtags",
+            "notes": "Requires ADIOS2. Essential for restart/continuation simulations.",
+        },
+        "function_evaluation": {
+            "at_points": "u.eval(points, cells) — evaluate function at arbitrary points (must find containing cells first)",
+            "find_cells": "dolfinx.geometry.bb_tree + compute_collisions + compute_colliding_cells",
+            "interpolation": "u.interpolate(expr) — interpolate expression or function into FE space",
+            "nonmatching": "dolfinx.fem.Function.interpolate_nonmatching() — interpolate between different meshes",
+        },
+        "visualization": {
+            "pyvista": {
+                "api": "grid = pyvista.UnstructuredGrid(*dolfinx.plot.vtk_mesh(V))",
+                "scalar_warp": "grid.warp_by_scalar()",
+                "vector_glyphs": "grid.glyph(orient='vectors', factor=0.1)",
+                "streamlines": "grid.streamlines(vectors='vectors')",
+            },
+        },
+        "pitfalls": [
+            "VTXWriter requires ADIOS2 — check installation",
+            "XDMFFile: only geometry order <= 2; for high-order elements, use VTX",
+            "VTXWriter only works with (discontinuous) Lagrange elements — not RT, Nedelec, etc.",
+            "Function eval requires finding containing cell first — use BoundingBoxTree",
+            "Checkpointing (restart) requires adios4dolfinx extension — not built into DOLFINx",
+            "Close writers explicitly (writer.close()) to flush data to disk",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # UFL FORM LANGUAGE
+    # ═══════════════════════════════════════════════════════════════════════════
+    "ufl_reference": {
+        "description": "Unified Form Language (UFL) reference for expressing variational forms in FEniCSx.",
+        "differential_operators": {
+            "grad(f)": "Gradient: scalar -> vector, vector -> tensor",
+            "div(v)": "Divergence: vector -> scalar, tensor -> vector",
+            "curl(v)": "Curl: vector -> vector (3D) or scalar (2D)",
+            "nabla_grad(f)": "Same as grad but with different index convention for tensors",
+            "nabla_div(v)": "Same as div but with different index convention",
+            "Dx(f, i)": "Partial derivative df/dx_i",
+        },
+        "algebraic_operators": {
+            "inner(a, b)": "Full contraction (all indices). For vectors: dot product. Complex: conjugates 2nd arg.",
+            "dot(a, b)": "Contracts last index of a with first of b",
+            "outer(a, b)": "Outer product (tensor product)",
+            "cross(a, b)": "Cross product (3D vectors)",
+            "det(A)": "Determinant of matrix",
+            "tr(A)": "Trace of matrix",
+            "sym(A)": "Symmetric part: 0.5*(A + A^T)",
+            "skew(A)": "Skew part: 0.5*(A - A^T)",
+            "dev(A)": "Deviatoric part: A - tr(A)/dim * I",
+            "inv(A)": "Matrix inverse (use cofac for better numerical stability)",
+            "cofac(A)": "Cofactor matrix: det(A) * inv(A)^T",
+            "transpose(A)": "Matrix transpose",
+        },
+        "measures": {
+            "dx": "Volume (cell) integration",
+            "ds": "Exterior facet (boundary) integration",
+            "dS": "Interior facet integration (DG methods)",
+            "dx(marker)": "Integration over subdomain with given marker",
+            "ds(marker)": "Integration over boundary with given marker",
+        },
+        "special_functions": {
+            "ufl.variable(expr)": "Declare expression as differentiable variable",
+            "ufl.diff(f, var)": "Differentiate f with respect to variable var",
+            "ufl.derivative(F, u, v)": "Gateaux derivative of form F w.r.t. u in direction v (for Newton Jacobian)",
+            "ufl.adjoint(a)": "Adjoint of bilinear form (swap trial/test)",
+            "ufl.action(a, f)": "Replace trial function with coefficient f",
+            "ufl.replace(form, {old: new})": "Substitute expressions in form",
+            "ufl.lhs(F)": "Extract bilinear (left) part from equation",
+            "ufl.rhs(F)": "Extract linear (right) part from equation",
+            "ufl.system(F)": "Split into (lhs, rhs) pair",
+        },
+        "dg_operators": {
+            "jump(v)": "Jump across interior facet: v('+') - v('-')",
+            "jump(v, n)": "Jump with normal: v('+')*n('+') + v('-')*n('-')",
+            "avg(v)": "Average across interior facet: 0.5*(v('+') + v('-'))",
+            "v('+'), v('-')": "Restriction to positive/negative side of interior facet",
+        },
+        "form_compilation": {
+            "form_compiler_options": "Passed to FFCx: run 'ffcx --help' for all options",
+            "jit_options": "Passed to CFFI JIT compilation of generated C code",
+            "quadrature_degree": "Set via metadata: dx(metadata={'quadrature_degree': q})",
+            "example": "dolfinx.fem.form(a, form_compiler_options={'optimize': True}, jit_options={'timeout': 120})",
+        },
+        "automatic_differentiation": {
+            "description": "UFL supports symbolic differentiation for deriving Jacobians, sensitivities, adjoint operators",
+            "jacobian_example": "F = inner(sigma(u), grad(v)) * dx; J = ufl.derivative(F, u, du) — auto-derive Newton Jacobian",
+            "material_tangent": "c = ufl.variable(c); psi = f(c); dpsi_dc = ufl.diff(psi, c) — material law differentiation",
+            "adjoint_optimization": "Use ufl.adjoint() and ufl.action() for PDE-constrained optimization",
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: POISSON
+    # ═══════════════════════════════════════════════════════════════════════════
+    "poisson": {
+        "description": "Poisson equation -div(kappa * grad(u)) = f. Foundation of all elliptic PDEs. Covers steady-state diffusion, electrostatics, potential flow.",
+        "weak_form": "kappa * inner(grad(u), grad(v)) * dx = inner(f, v) * dx + inner(g, v) * ds",
+        "function_space": "Lagrange order 1 or 2 (higher order for smooth solutions)",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_poisson.html",
+        "code_skeleton": {
+            "imports": "from mpi4py import MPI; from dolfinx import fem, mesh, io; from dolfinx.fem.petsc import LinearProblem; import ufl; import numpy as np",
+            "mesh": "domain = mesh.create_unit_square(MPI.COMM_WORLD, 32, 32)",
+            "space": "V = fem.functionspace(domain, ('Lagrange', 1))",
+            "bc": "fdim = domain.topology.dim - 1; boundary_facets = mesh.locate_entities_boundary(domain, fdim, lambda x: np.full(x.shape[1], True)); bc = fem.dirichletbc(0.0, fem.locate_dofs_topological(V, fdim, boundary_facets), V)",
+            "forms": "u, v = ufl.TrialFunction(V), ufl.TestFunction(V); a = inner(grad(u), grad(v)) * ufl.dx; L = f * v * ufl.dx",
+            "solve": "problem = LinearProblem(a, L, bcs=[bc], petsc_options={'ksp_type': 'cg', 'pc_type': 'hypre'}); uh = problem.solve()",
+        },
+        "solver": {"direct": "ksp_type: preonly, pc_type: lu, pc_factor_mat_solver_type: mumps", "iterative": "ksp_type: cg, pc_type: hypre (BoomerAMG)"},
+        "mixed_formulation": {
+            "description": "Mixed Poisson: introduce flux sigma = -grad(u), solve for (sigma, u) simultaneously",
+            "elements": "Raviart-Thomas for sigma + DG(k-1) for u",
+            "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_mixed-poisson.html",
+            "block_preconditioner": "Block-diagonal Riesz-map preconditioner for the saddle-point system",
+        },
+        "matrix_free": {
+            "description": "Matrix-free CG solver using action of bilinear form (no explicit matrix assembly)",
+            "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_poisson_matrix_free.html",
+            "notes": "Computes matrix-vector product on-the-fly. Diagonal assembly available for Jacobi preconditioning.",
+        },
+        "pitfalls": [
+            "Ensure boundary facets created: mesh.topology.create_connectivity(fdim, tdim)",
+            "Use default_scalar_type for constants to match PETSc build (float64 vs complex128)",
+            "VTXWriter only works with Lagrange elements — not mixed/DG for visualization",
+            "Pure Neumann problem: solution only up to constant — need mean-value or pinning constraint",
+            "For non-unit kappa: define as fem.Constant or spatially varying fem.Function",
+        ],
+        "materials": {"kappa": {"range": [0.001, 1e6], "unit": "W/(m*K) or dimensionless"}},
+        "reference_solutions": {"unit_square_f1": "max(u) ~ 0.0737 for -laplacian(u)=1 on [0,1]^2, u=0 on boundary"},
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: LINEAR ELASTICITY
+    # ═══════════════════════════════════════════════════════════════════════════
+    "linear_elasticity": {
+        "description": "Linear elasticity with Lame parameters. Small strain assumption. Plane strain, plane stress, or full 3D.",
+        "weak_form": "inner(sigma(u), epsilon(v)) * dx = dot(f, v) * dx + dot(t, v) * ds",
+        "function_space": "Vector Lagrange: element('Lagrange', cell, 1, shape=(gdim,))",
+        "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter2/linearelasticity.html",
+        "constitutive": {
+            "sigma(u)": "lambda_ * nabla_div(u) * Identity(d) + 2*mu * epsilon(u)",
+            "epsilon(u)": "ufl.sym(ufl.grad(u)) = 0.5*(grad(u) + grad(u)^T)",
+            "mu": "E / (2*(1+nu))",
+            "lambda_": "E*nu / ((1+nu)*(1-2*nu))",
+            "plane_stress_lambda": "2*mu*lambda_ / (2*mu + lambda_)",
+        },
+        "code_skeleton": {
+            "space": "V = fem.functionspace(domain, ('Lagrange', 1, (gdim,)))",
+            "sigma": "def sigma(u): return lambda_ * ufl.nabla_div(u) * ufl.Identity(len(u)) + 2*mu*ufl.sym(ufl.grad(u))",
+            "forms": "a = ufl.inner(sigma(u), epsilon(v)) * ufl.dx; L = ufl.dot(f, v) * ufl.dx",
+        },
+        "solver": {
+            "recommended": "CG + GAMG with near-nullspace (rigid body modes)",
+            "alternative": "LU (MUMPS) for small problems",
+            "near_nullspace": "6 modes in 3D: 3 translations + 3 rotations. Set via matrix.setNearNullSpace()",
+            "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_elasticity.html",
+        },
+        "static_condensation": {
+            "description": "Mixed stress-displacement formulation with condensation of internal stress DOFs",
+            "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_static-condensation.html",
+            "notes": "Uses numba for efficient condensation of block forms. Cook's membrane benchmark.",
+        },
+        "pitfalls": [
+            "Vector function space: ('Lagrange', 1, (gdim,)) — NOT scalar",
+            "Dirichlet BC value: np.array([0.0]*gdim, dtype=default_scalar_type) — not scalar 0",
+            "Plane strain vs plane stress: adjust lambda accordingly (plane stress: use lambda_star)",
+            "Near-incompressible (nu > 0.49): MUST use mixed formulation to avoid volumetric locking",
+            "For GAMG/AMG: MUST provide near-nullspace (rigid body modes) for convergence on large problems",
+            "2D default is plane strain — explicit modification needed for plane stress",
+        ],
+        "materials": {
+            "E": {"range": [1.0, 1e12], "unit": "Pa", "examples": {"steel": 210e9, "aluminum": 70e9, "rubber": 1e6}},
+            "nu": {"range": [0.0, 0.499], "unit": "dimensionless", "examples": {"steel": 0.3, "rubber": 0.49}},
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: STOKES FLOW
+    # ═══════════════════════════════════════════════════════════════════════════
+    "stokes": {
+        "description": "Stokes flow (Re -> 0). Linear saddle-point problem. Mixed P2/P1 (Taylor-Hood) or MINI element.",
+        "weak_form": "nu*inner(grad(u),grad(v))*dx - p*div(v)*dx - q*div(u)*dx = dot(f,v)*dx",
+        "function_space": "Mixed: Taylor-Hood P2/P1 (inf-sup stable). Alternative: MINI (P1+Bubble/P1), CR/DG0.",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_stokes.html",
+        "element_construction": {
+            "taylor_hood": "P2v = basix.ufl.element('Lagrange', cell, 2, shape=(gdim,)); P1 = basix.ufl.element('Lagrange', cell, 1); TH = basix.ufl.mixed_element([P2v, P1])",
+            "mini": "P1v = basix.ufl.element('Lagrange', cell, 1, shape=(gdim,)); B = basix.ufl.element('Bubble', cell, gdim+1, shape=(gdim,)); V_el = basix.ufl.enriched_element([P1v, B]); P1 = basix.ufl.element('Lagrange', cell, 1); MINI = basix.ufl.mixed_element([V_el, P1])",
+        },
+        "solver": {
+            "direct": "LU (MUMPS) for small problems (linear system, no Newton)",
+            "iterative": "MinRes + fieldsplit block preconditioner",
+            "block_precon": "AMG for velocity block, pressure mass matrix for Schur complement approximation",
+        },
+        "pitfalls": [
+            "MUST use inf-sup stable pair — equal-order P1/P1 is UNSTABLE (oscillatory pressure)",
+            "Pressure determined up to constant for enclosed flows — pin one DOF or set nullspace",
+            "Taylor-Hood Q2/Q1 on quads also works but requires careful construction",
+            "Block preconditioner essential for efficiency beyond ~100k DOFs",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: NAVIER-STOKES
+    # ═══════════════════════════════════════════════════════════════════════════
+    "navier_stokes": {
+        "description": "Incompressible Navier-Stokes. Two approaches: (1) Monolithic Newton on mixed formulation, (2) IPCS fractional-step splitting.",
+        "weak_form_monolithic": "nu*inner(grad(u),grad(v))*dx + inner(dot(u,nabla_grad(u)),v)*dx - p*div(v)*dx - q*div(u)*dx = dot(f,v)*dx",
+        "function_space": "Mixed: P2 velocity + P1 pressure (Taylor-Hood, inf-sup stable)",
+        "ipcs_splitting": {
+            "description": "Incremental Pressure Correction Scheme (IPCS) — Chorin's splitting, 2nd order",
+            "step1": "Tentative velocity: solve momentum with old pressure",
+            "step2": "Pressure correction: pressure Poisson equation using tentative velocity divergence",
+            "step3": "Velocity correction: project velocity to be divergence-free",
+            "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code1.html",
+            "advantage": "Decouples velocity and pressure — smaller systems, easier to precondition",
+            "disadvantage": "Splitting error, requires small time step for accuracy",
+        },
+        "dg_navier_stokes": {
+            "description": "Divergence-conforming DG method using BDM elements for exactly divergence-free velocity",
+            "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_navier-stokes.html",
+        },
+        "benchmarks": {
+            "poiseuille_channel": "https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code1.html",
+            "dfg_cylinder_benchmark": "https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html — DFG 2D-3, T=8, dt=1/1600, Re=100",
+        },
+        "solver": {
+            "monolithic": "NonlinearProblem with SNES newtonls + MUMPS (small) or GMRES+AMG (large)",
+            "ipcs": "Three sequential LinearProblem solves per time step",
+        },
+        "pitfalls": [
+            "Must use inf-sup stable pair (Taylor-Hood P2/P1) — equal-order needs stabilization",
+            "Pressure needs pinning for enclosed flows (Dirichlet at one point or nullspace)",
+            "High Re (>500) requires finer mesh or continuation in Re for Newton convergence",
+            "BCs on sub-spaces: need Function on collapsed sub-space, not raw constant",
+            "P2 velocity can't write to XDMF directly — interpolate to P1 or use VTX",
+            "Newton may not converge: check snes_monitor, reduce Re, refine mesh, or use IPCS",
+            "IPCS time step must be small enough for splitting error to be acceptable",
+        ],
+        "materials": {
+            "Re": {"range": [1, 10000], "unit": "dimensionless", "description": "Reynolds number"},
+            "nu": {"range": [1e-6, 1.0], "unit": "m^2/s", "description": "Kinematic viscosity = 1/Re for unit domain"},
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: HEAT EQUATION
+    # ═══════════════════════════════════════════════════════════════════════════
+    "heat": {
+        "description": "Heat equation (steady or transient). Fourier's law: rho*cp*dT/dt - div(k*grad(T)) = Q.",
+        "weak_form_steady": "k * inner(grad(T), grad(v)) * dx = Q * v * dx",
+        "weak_form_transient": "(T - T_n)/dt * v * dx + k * inner(grad(T), grad(v)) * dx = Q * v * dx",
+        "function_space": "Lagrange order 1 or 2",
+        "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter2/heat_equation.html",
+        "time_integration": {
+            "backward_euler": "Implicit, 1st order, unconditionally stable. theta=1 in theta-method.",
+            "crank_nicolson": "theta=0.5, 2nd order, may oscillate near discontinuities.",
+            "bdf2": "2nd order backward difference, requires 2 previous solutions.",
+            "implementation": "LHS matrix is time-independent — assemble once, update RHS each step.",
+        },
+        "code_skeleton": {
+            "time_loop": "for n in range(num_steps): t += dt; update_bcs(t); assemble L; solve Au=b; u_n.x.array[:] = u.x.array",
+        },
+        "solver": {"direct": "LU (small)", "iterative": "CG + hypre per time step"},
+        "pitfalls": [
+            "Insulated boundary = natural BC (do nothing, zero flux)",
+            "For transient: update BCs and source term at each time step",
+            "Mass matrix assembly for time derivative: (T/dt)*v*dx on LHS, (T_n/dt)*v*dx on RHS",
+            "Temperature units must be consistent with material properties",
+            "Backward Euler is diffusive but stable; Crank-Nicolson is more accurate but may oscillate",
+        ],
+        "materials": {"conductivity": {"range": [0.01, 1000], "unit": "W/(m*K)"}, "rho_cp": {"description": "Volumetric heat capacity"}},
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: CONVECTION-DIFFUSION (SUPG)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "convection_diffusion": {
+        "description": "Advection-diffusion equation with SUPG (Streamline Upwind Petrov-Galerkin) stabilization for advection-dominated transport.",
+        "weak_form": "inner(b, grad(u))*v*dx + kappa*inner(grad(u), grad(v))*dx = f*v*dx",
+        "supg_stabilization": {
+            "description": "Add stabilization term: tau * inner(b, grad(v)) * (inner(b, grad(u)) + kappa*div(grad(u)) - f) * dx",
+            "tau": "h / (2*|b|) * (coth(Pe_h) - 1/Pe_h) where Pe_h = |b|*h/(2*kappa) is cell Peclet number",
+            "implementation": "Modify test function: v_stab = v + tau * inner(b, grad(v))",
+        },
+        "alternative_stabilizations": {
+            "DG": "Discontinuous Galerkin with upwind flux — naturally handles advection",
+            "GLS": "Galerkin Least Squares — similar to SUPG but also stabilizes reaction",
+        },
+        "pitfalls": [
+            "Without stabilization, Galerkin method produces oscillations for Pe > 1",
+            "SUPG tau parameter depends on mesh size h and velocity magnitude — must compute per cell",
+            "DG methods are a cleaner alternative for pure advection (no diffusion)",
+            "For time-dependent: use SUPG in space, implicit time stepping",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: HYPERELASTICITY
+    # ═══════════════════════════════════════════════════════════════════════════
+    "hyperelasticity": {
+        "description": "Nonlinear hyperelasticity with large deformations. Stored energy function approach.",
+        "weak_form": "delta_Pi(u;v) = 0 where Pi = integral(psi(F) dx - T.u ds), solved as F(u,v) = dPi/du[v] = 0",
+        "function_space": "Vector Lagrange order 1 or 2",
+        "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter2/hyperelasticity.html",
+        "kinematics": {
+            "F": "ufl.variable(ufl.Identity(d) + ufl.grad(u)) — deformation gradient",
+            "C": "F.T * F — right Cauchy-Green tensor",
+            "J": "ufl.det(F) — volume ratio (J>0 required)",
+            "I_C": "ufl.tr(C) — first invariant",
+            "I_Cbar": "J^(-2/d) * I_C — isochoric first invariant",
+        },
+        "material_models": {
+            "neo_hookean": {
+                "psi": "(mu/2)*(I_C - 3) - mu*ln(J) + (lambda_/2)*(ln(J))**2",
+                "parameters": "mu = E/(2*(1+nu)), lambda_ = E*nu/((1+nu)*(1-2*nu))",
+            },
+            "mooney_rivlin": {
+                "psi": "c1*(I_C - 3) + c2*(II_C - 3) + (K/2)*(J-1)**2",
+                "parameters": "c1, c2 (material constants), K (bulk modulus)",
+                "notes": "II_C = 0.5*(tr(C)^2 - tr(C^2)) is second invariant",
+            },
+        },
+        "code_skeleton": {
+            "F": "F = ufl.variable(ufl.Identity(d) + ufl.grad(u))",
+            "psi": "psi = (mu/2)*(ufl.tr(F.T*F) - 3) - mu*ufl.ln(ufl.det(F)) + (lmbda/2)*(ufl.ln(ufl.det(F)))**2",
+            "P": "P = ufl.diff(psi, F)  # First Piola-Kirchhoff stress via automatic differentiation",
+            "F_form": "F_form = ufl.inner(P, ufl.grad(v)) * ufl.dx - ufl.dot(traction, v) * ufl.ds",
+        },
+        "solver": {
+            "nonlinear": "NonlinearProblem with SNES newtonls",
+            "petsc_options": {"snes_type": "newtonls", "ksp_type": "preonly", "pc_type": "lu", "pc_factor_mat_solver_type": "mumps"},
+            "load_stepping": "For large deformations: apply load in increments, solving at each step",
+        },
+        "pitfalls": [
+            "Large load steps cause Newton divergence — use incremental load stepping",
+            "Locking for nu > 0.49: use mixed formulation (u,p) or F-bar method",
+            "Neo-Hookean: check J>0 everywhere (negative = inverted element = solver failure)",
+            "Use ufl.variable() and ufl.diff() for automatic tangent computation — avoid hand-coding",
+            "For nearly incompressible: Ogden-type split into volumetric + isochoric parts",
+            "Convergence: snes_monitor to watch residual; if stalled, reduce load increment",
+        ],
+        "materials": {
+            "E": {"range": [1e2, 1e12], "unit": "Pa"},
+            "nu": {"range": [0.0, 0.499], "unit": "dimensionless"},
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: THERMAL-STRUCTURAL COUPLING
+    # ═══════════════════════════════════════════════════════════════════════════
+    "thermal_structural": {
+        "description": "Coupled thermal-structural: solve heat -> apply thermal strain -> solve elasticity. Sequential (one-way) or iterative (two-way).",
+        "weak_form": "Step 1: k*(grad(T),grad(v))*dx = Q*v*dx. Step 2: sigma(u)=C:(eps(u) - alpha*DeltaT*I), inner(sigma,eps(v))*dx = 0",
+        "function_space": "Scalar Lagrange for T, Vector Lagrange for u (two separate function spaces)",
+        "coupling_approach": {
+            "one_way": "Sequential: solve thermal first, feed temperature to structural as thermal load",
+            "two_way": "Iterative: solve thermal, solve mechanical, update thermal conductivity with deformation, repeat",
+        },
+        "solver": {"thermal": "CG + hypre", "structural": "CG + GAMG"},
+        "pitfalls": [
+            "Thermal strain = alpha * DeltaT * Identity (isotropic expansion/contraction)",
+            "Reference temperature T_ref matters: DeltaT = T - T_ref",
+            "Plane strain: use full 3D Lame parameters (not plane stress modification)",
+            "Mechanical BC needed to prevent rigid body motion (over-constrained = locking)",
+            "Two-way coupling (thermoelastic) requires Picard iteration between fields",
+        ],
+        "materials": {
+            "E": {"range": [1e3, 1e12], "unit": "Pa"},
+            "nu": {"range": [0.0, 0.499], "unit": "dimensionless"},
+            "alpha": {"range": [1e-7, 1e-4], "unit": "1/K", "description": "Thermal expansion coefficient",
+                      "examples": {"steel": 12e-6, "aluminum": 23e-6, "concrete": 10e-6}},
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: BIHARMONIC / KIRCHHOFF PLATE
+    # ═══════════════════════════════════════════════════════════════════════════
+    "biharmonic": {
+        "description": "Biharmonic equation (4th order): laplacian^2(u) = f. Used for Kirchhoff plates, stream function formulation. Requires DG or C1 elements.",
+        "weak_form_ip": "inner(div(grad(u)), div(grad(v)))*dx - inner(avg(div(grad(u))), jump(grad(v),n))*dS - inner(jump(grad(u),n), avg(div(grad(v))))*dS + alpha/h*inner(jump(grad(u),n), jump(grad(v),n))*dS",
+        "method": "Interior Penalty (IP-DG): C0 elements with penalty on gradient jumps",
+        "function_space": "Lagrange order 2 (with interior penalty for C0 elements)",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_biharmonic.html",
+        "alternative": "Hermite elements (C1 conforming) — avoids DG penalty terms but limited to simplices",
+        "solver": "LU (direct) for moderate sizes, GMRES for large",
+        "pitfalls": [
+            "Penalty parameter alpha must be large enough for stability (scales with polynomial degree^2)",
+            "h_E is a measure of cell size — must be computed correctly for penalty term",
+            "Interior penalty requires interior facet integrals (dS) — more expensive than standard FEM",
+            "Alternative: split into two 2nd-order equations (mixed method with auxiliary variable)",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: HELMHOLTZ
+    # ═══════════════════════════════════════════════════════════════════════════
+    "helmholtz": {
+        "description": "Helmholtz equation: -laplacian(u) - k^2*u = f. Acoustic/optical wave propagation. Can be complex-valued.",
+        "weak_form": "inner(grad(u), grad(v))*dx - k**2 * inner(u, v)*dx = inner(f, v)*dx",
+        "function_space": "Lagrange order 2+ (need ~10 points per wavelength for accuracy)",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_helmholtz.html",
+        "complex_valued": {
+            "description": "Helmholtz with complex source/solution requires complex-valued PETSc build",
+            "scalar_type": "np.complex128",
+            "notes": "DOLFINx supports float32, float64, complex64, complex128 scalar types",
+        },
+        "absorbing_bc": {
+            "description": "First-order absorbing BC: du/dn = -ik*u on artificial boundary",
+            "implementation": "Add -1j*k*inner(u,v)*ds to bilinear form",
+        },
+        "solver": "GMRES + LU (direct) for moderate sizes. Indefinite system — CG does NOT work.",
+        "pitfalls": [
+            "Need fine mesh: ~10 points per wavelength minimum (pollution effect for high k)",
+            "System is indefinite — standard CG diverges. Use GMRES or direct solver.",
+            "High wavenumber k: requires specialized preconditioners (shifted Laplacian)",
+            "Complex mode: PETSc must be compiled with --with-scalar-type=complex",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: MAXWELL / ELECTROMAGNETICS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "maxwell": {
+        "description": "Maxwell's equations for electromagnetic wave propagation. Curl-curl formulation. Requires H(curl) (Nedelec) elements.",
+        "weak_form_curl_curl": "inner(curl(E), curl(v))*dx - k0**2 * epsilon_r * inner(E, v)*dx = inner(J, v)*dx",
+        "function_space": "Nedelec 1st kind (N1curl) — H(curl) conforming, tangential continuity",
+        "demos": {
+            "scattering_wire": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_scattering_boundary_conditions.html",
+            "scattering_pml": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_pml.html",
+            "waveguide_modes": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_half_loaded_waveguide.html",
+            "axisymmetric_sphere": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_axis.html",
+        },
+        "pml": {
+            "description": "Perfectly Matched Layer — artificial absorbing boundary layer",
+            "implementation": "Complex-valued coordinate stretching transforms Maxwell equations in PML region",
+        },
+        "eigenvalue": {
+            "description": "Electromagnetic modal analysis — find waveguide modes using SLEPc EPS",
+            "elements": "N1curl (Nedelec) for transverse + Lagrange for axial component on quads",
+            "solver": "SLEPc Krylov-Schur with spectral transformation (shift-and-invert)",
+        },
+        "solver": "GMRES + AMS (auxiliary-space Maxwell solver from hypre) for curl-curl",
+        "pitfalls": [
+            "MUST use H(curl) elements (Nedelec) — standard Lagrange violates physical constraints",
+            "Complex-valued: PETSc compiled with --with-scalar-type=complex",
+            "PML requires careful coordinate stretching formulation",
+            "Low-frequency breakdown: curl-curl formulation fails for k0 -> 0 (use mixed formulation)",
+            "Edge elements (N1curl) have different DOF ordering than nodal elements — check orientation",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: CAHN-HILLIARD (PHASE FIELD)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "cahn_hilliard": {
+        "description": "Cahn-Hilliard equation: nonlinear, time-dependent 4th-order PDE for phase separation in binary mixtures. Split into two 2nd-order equations.",
+        "equations": "dc/dt = div(M * grad(mu)), mu = f'(c) - lambda*laplacian(c), f(c) = 100*c^2*(1-c)^2",
+        "weak_form": "(c-c_n)/dt * q * dx + M * inner(grad(mu), grad(q)) * dx = 0; mu*v*dx - df/dc*v*dx - lambda*inner(grad(c),grad(v))*dx = 0",
+        "function_space": "Mixed element: two copies of Lagrange for (c, mu)",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_cahn-hilliard.html",
+        "code_skeleton": {
+            "element": "P1 = basix.ufl.element('Lagrange', cell, 1); ME = basix.ufl.mixed_element([P1, P1])",
+            "differentiation": "c = ufl.variable(c); f = 100*c**2*(1-c)**2; dfdc = ufl.diff(f, c)",
+            "time_stepping": "theta-method with theta=0.5 (Crank-Nicolson) for time integration",
+        },
+        "solver": "SNES Newton + LU per time step",
+        "parameters": {
+            "lmbda": "Surface parameter (controls interface width) ~ 1e-2",
+            "dt": "Time step ~ 5e-6 (must be small for stability)",
+            "M": "Mobility coefficient",
+        },
+        "pitfalls": [
+            "Very stiff system — requires small time step especially initially",
+            "Chemical potential df/dc must use ufl.variable() and ufl.diff() for automatic differentiation",
+            "Random initial condition: c_0 = 0.63 + 0.02*(random - 0.5) for spinodal decomposition",
+            "Newton convergence sensitive to time step — reduce dt if diverging",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: EIGENVALUE PROBLEMS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "eigenvalue": {
+        "description": "Eigenvalue problems A*x = lambda*B*x using SLEPc. Vibration modes, buckling, electromagnetic modes.",
+        "function_space": "Depends on physics: Lagrange for scalar, Nedelec for EM, vector Lagrange for structural",
+        "demo_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_half_loaded_waveguide.html",
+        "code_skeleton": {
+            "imports": "from slepc4py import SLEPc",
+            "setup": "eps = SLEPc.EPS().create(MPI.COMM_WORLD); eps.setOperators(A, B); eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)",
+            "target": "eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE); eps.setTarget(sigma)",
+            "spectral_transform": "st = eps.getST(); st.setType(SLEPc.ST.Type.SINVERT)  # shift-and-invert",
+            "solve": "eps.solve(); nconv = eps.getConverged()",
+            "extract": "eigval = eps.getEigenvalue(i); eps.getEigenvector(i, xr, xi)",
+        },
+        "solver_types": {
+            "krylovschur": "Default, recommended for most problems",
+            "arnoldi": "Standard Arnoldi iteration",
+            "lanczos": "For symmetric (Hermitian) problems",
+            "power": "Power iteration (only for dominant eigenvalue)",
+            "jd": "Jacobi-Davidson (interior eigenvalues)",
+        },
+        "pitfalls": [
+            "SLEPc must be installed and PETSc configured with --download-slepc",
+            "Shift-and-invert (SINVERT) essential for finding interior eigenvalues",
+            "Must request enough eigenvalues: eps.setDimensions(nev, ncv)",
+            "For generalized EVP: B must be assembled without BC rows zeroed (use separate assembly)",
+            "Complex eigenvalues require complex PETSc build",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: REACTION-DIFFUSION SYSTEMS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "reaction_diffusion": {
+        "description": "Systems of coupled reaction-diffusion equations. Nonlinear reaction terms, multiple species.",
+        "weak_form": "For species i: d(c_i)/dt * v_i * dx + D_i*inner(grad(c_i),grad(v_i))*dx = R_i(c)*v_i*dx",
+        "function_space": "Mixed element with one Lagrange component per species",
+        "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter2/intro.html (advection-diffusion-reaction systems)",
+        "solver": "SNES Newton for nonlinear reaction terms",
+        "pitfalls": [
+            "Nonlinear reaction terms require Newton iteration",
+            "Stiff reactions (fast kinetics) may need implicit time stepping with small dt",
+            "Species concentrations should remain non-negative — check solution and add constraints if needed",
+            "Use ufl.variable() and ufl.diff() for automatic Jacobian of reaction terms",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: NEARLY INCOMPRESSIBLE ELASTICITY
+    # ═══════════════════════════════════════════════════════════════════════════
+    "nearly_incompressible_elasticity": {
+        "description": "Mixed methods for nearly incompressible elasticity (nu -> 0.5) to avoid volumetric locking.",
+        "weak_form": "2*mu*inner(eps_dev(u),eps(v))*dx + p*div(v)*dx + (div(u) - p/kappa)*q*dx = dot(f,v)*dx",
+        "function_space": "Mixed: Vector Lagrange for displacement + DG(k-1) for pressure",
+        "approach": {
+            "displacement_pressure": "u-p formulation: displacement (vector) + pressure (scalar) as independent unknowns",
+            "three_field": "u-p-theta: displacement + pressure + dilatation (for Neo-Hookean)",
+        },
+        "solver": "MinRes or GMRES with block preconditioner (saddle-point structure)",
+        "pitfalls": [
+            "Standard displacement formulation locks for nu > 0.49 — MUST use mixed method",
+            "Inf-sup condition: pressure space must be 'smaller' than displacement space",
+            "Taylor-Hood (P2/P1) or (P2/DG0) work; P1/P0 does NOT satisfy inf-sup",
+            "Penalty method (large kappa) is alternative but introduces parameter sensitivity",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: CONTACT PROBLEMS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "contact": {
+        "description": "Contact mechanics in FEniCSx. Not built into DOLFINx core — requires custom implementation or extensions.",
+        "approaches": {
+            "penalty_method": "Add penalty energy for penetration: 1/2 * epsilon * max(0, -gap)^2. Simple but parameter-sensitive.",
+            "nitsche_method": "Variationally consistent weak enforcement of contact. No additional unknowns.",
+            "lagrange_multiplier": "Introduce multiplier for contact pressure. Exact but increases system size.",
+            "dolfinx_contact": "github.com/jorgensd/dolfinx_contact — extension package for contact in DOLFINx",
+        },
+        "pitfalls": [
+            "No built-in contact in DOLFINx — must implement penalty/Nitsche or use extensions",
+            "Penalty parameter: too small = penetration, too large = ill-conditioning",
+            "Contact detection (gap computation) requires geometric search",
+            "Self-contact requires careful implementation of contact pairs",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: PHASE-FIELD FRACTURE
+    # ═══════════════════════════════════════════════════════════════════════════
+    "fracture": {
+        "description": "Phase-field approach to fracture mechanics. Diffuse crack representation avoids remeshing. Extensions: PhaseFieldX library.",
+        "equations": "Coupled: (1) mechanical equilibrium with degraded stiffness g(d)*sigma, (2) phase-field evolution for damage d",
+        "function_space": "Vector Lagrange for displacement, scalar Lagrange for damage field d in [0,1]",
+        "approach": {
+            "AT1": "Standard phase-field model with linear dissipation",
+            "AT2": "Phase-field model with quadratic dissipation (most common)",
+        },
+        "parameters": {
+            "Gc": "Critical energy release rate [J/m^2]",
+            "l0": "Length scale parameter (regularization width) — mesh must resolve l0",
+            "irreversibility": "d_new >= d_old (crack cannot heal) — enforce via history variable or penalty",
+        },
+        "solver": "Staggered scheme (alternate between mechanical and damage) or monolithic Newton",
+        "libraries": {
+            "phasefieldx": "github.com/CastillonMiguel/phasefieldx — open-source DOLFINx phase-field framework",
+        },
+        "pitfalls": [
+            "Mesh must be fine enough to resolve length scale l0 (h << l0)",
+            "Irreversibility constraint: must enforce d_new >= d_old",
+            "Staggered scheme: simple but slow convergence; monolithic: fast but needs good initial guess",
+            "Tension-compression split needed to prevent crack closure under compression",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHYSICS: COUPLED STOKES-DARCY
+    # ═══════════════════════════════════════════════════════════════════════════
+    "stokes_darcy": {
+        "description": "Coupled Stokes-Darcy for free fluid / porous medium interaction. Interface conditions: Beavers-Joseph-Saffman.",
+        "equations": {
+            "stokes_region": "-div(2*mu*eps(u) - p*I) = f, div(u) = 0",
+            "darcy_region": "u_D = -(K/mu)*grad(p_D), div(u_D) = g",
+            "interface": "Continuity of normal flux, balance of normal stress, Beavers-Joseph-Saffman tangential condition",
+        },
+        "function_space": "Taylor-Hood for Stokes, RT+DG for Darcy (or unified mixed formulation)",
+        "implementation_approaches": {
+            "monolithic": "Single mesh with subdomain markers, different weak forms per region",
+            "partitioned": "Separate meshes coupled via interface conditions (submesh approach)",
+            "submesh": "DOLFINx create_submesh() to extract regions, couple via restriction operators",
+        },
+        "pitfalls": [
+            "No built-in Stokes-Darcy demo in DOLFINx — must assemble custom weak forms",
+            "Interface conditions (Beavers-Joseph-Saffman) require careful implementation",
+            "Different function spaces in different regions: use submesh or subdomain-restricted forms",
+            "Permeability K can vary by orders of magnitude — use appropriate preconditioners",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADVANCED: MULTIPHYSICS ON SUBMESHES
+    # ═══════════════════════════════════════════════════════════════════════════
+    "multiphysics_submeshes": {
+        "description": "Solving PDEs on subdomains with different physics using DOLFINx submeshes (0.10+ feature).",
+        "demo_url": "https://jsdokken.com/FEniCS-workshop/src/multiphysics/submeshes.html",
+        "approach": {
+            "create_submesh": "Extract subdomain mesh from parent mesh",
+            "restriction": "Integration over subdomains using measures dx(marker)",
+            "coupling": "Transfer data between submeshes via interpolation or shared DOFs",
+        },
+        "use_cases": "Different materials, different physics (FSI), domain decomposition",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADVANCED: OPTIMAL CONTROL / ADJOINT
+    # ═══════════════════════════════════════════════════════════════════════════
+    "optimal_control": {
+        "description": "PDE-constrained optimization and adjoint methods in FEniCSx.",
+        "demo_url": "https://jsdokken.com/FEniCS-workshop/src/applications/optimal_control.html",
+        "approach": {
+            "derive_adjoint": "Use UFL adjoint() and action() to derive adjoint PDE",
+            "interface_scipy": "Extract gradient via adjoint solve, pass to scipy.optimize for minimization",
+            "dolfin_adjoint": "Algorithmic differentiation tool (github.com/dolfin-adjoint/dolfin-adjoint) — automatic tape-based AD",
+        },
+        "use_cases": "Shape optimization, topology optimization, parameter estimation, inverse problems",
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADVANCED: COMPLEX-VALUED PROBLEMS
+    # ═══════════════════════════════════════════════════════════════════════════
+    "complex_valued": {
+        "description": "Solving PDEs with complex-valued solutions in DOLFINx (Helmholtz, Maxwell, wave scattering).",
+        "demo_url": "https://jsdokken.com/dolfinx-tutorial/chapter1/complex_mode.html",
+        "scalar_types": {
+            "float32": "Single precision real",
+            "float64": "Double precision real (default)",
+            "complex64": "Single precision complex",
+            "complex128": "Double precision complex",
+        },
+        "api": "dolfinx.default_scalar_type — check/switch between real/complex builds",
+        "demo_types_url": "https://docs.fenicsproject.org/dolfinx/main/python/demos/demo_types.html",
+        "pitfalls": [
+            "PETSc must be compiled with --with-scalar-type=complex for complex problems",
+            "Cannot mix real and complex in same session — it is a build-time choice",
+            "Some solvers (CG) do not work with complex arithmetic — use GMRES",
+            "inner(a,b) in UFL conjugates the second argument for complex-valued problems",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADVANCED: PARALLEL COMPUTING
+    # ═══════════════════════════════════════════════════════════════════════════
+    "parallel_computing": {
+        "description": "MPI-based parallel computing in DOLFINx. First-class parallel from ground up.",
+        "api": {
+            "communicator": "All mesh/solver creation takes MPI.COMM_WORLD (or sub-communicator)",
+            "run": "mpirun -np N python script.py",
+            "partitioning": "Automatic mesh partitioning on creation (configurable partitioner)",
+            "assembly": "dolfinx.fem.assemble_scalar() sums across ranks automatically",
+        },
+        "performance": {
+            "scaling": "Strong and weak scaling demonstrated up to thousands of cores",
+            "mesh_partitioning": "Graph-based (ParMETIS, SCOTCH, or KaHIP) for load balancing",
+            "ghost_layer": "DOLFINx manages ghost cells/DOFs automatically",
+            "neighbourhood_collectives": "MPI Neighbourhood collectives for efficient halo exchange",
+        },
+        "pitfalls": [
+            "MUST use MPI communicator consistently — do not mix serial and parallel operations",
+            "Output: only rank 0 should print; use if MPI.COMM_WORLD.rank == 0:",
+            "Some operations (e.g., Gmsh model creation) should be done on rank 0 only",
+            "pyamg is serial-only — use PETSc AMG for parallel",
+            "Function evaluation at points requires parallel geometric search (BoundingBoxTree)",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # API CHANGES TRACKER (0.9 -> 0.10)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "api_changes": {
+        "description": "Critical API changes between DOLFINx versions. Essential for writing version-portable code.",
+        "0_9_to_0_10": {
+            "NewtonSolver_deprecated": "dolfinx.nls.petsc.NewtonSolver deprecated -> use dolfinx.fem.petsc.NonlinearProblem wrapping PETSc SNES directly",
+            "gmsh_module_renamed": "dolfinx.io.gmshio -> dolfinx.io.gmsh (module rename)",
+            "gmsh_returns_MeshData": "model_to_mesh() returns MeshData dataclass (with cell_tags, facet_tags by codimension) instead of tuple",
+            "LinearProblem_blocked": "dolfinx.fem.petsc.LinearProblem now supports blocked problems (kind='mpi' or kind='nest')",
+            "ZeroBaseForm": "ufl.ZeroBaseForm removes need for dummy 0*v*dx to compile empty forms",
+            "uniform_refine": "dolfinx.mesh.uniform_refine() added (all CellTypes supported)",
+            "vtkhdf_reader": "dolfinx.io.vtkhdf.read_mesh() added (Kitware's next-gen format)",
+            "branching_meshes": "T-joints (3+ cells per facet) now supported as input meshes",
+        },
+        "0_7_to_0_8": {
+            "basix_ufl_element": "Use basix.ufl.element() instead of ufl.FiniteElement()",
+            "mixed_element": "Use basix.ufl.mixed_element() instead of ufl.MixedElement()",
+            "blocked_element": "Use basix.ufl.blocked_element() for vector/tensor elements",
+            "functionspace": "fem.functionspace() (lowercase) replaces fem.FunctionSpace()",
+        },
+        "pitfalls": [
+            "Online tutorials may use old API (ufl.FiniteElement, FunctionSpace) — translate to new API",
+            "The jsdokken tutorial is updated for latest version — use it as primary reference",
+            "DOLFINx version in Docker images may differ from pip install — check dolfinx.__version__",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # DEMO CATALOG — All official DOLFINx demos
+    # ═══════════════════════════════════════════════════════════════════════════
+    "demo_catalog": {
+        "description": "Complete catalog of official DOLFINx demos (docs.fenicsproject.org/dolfinx/main/python/demos.html).",
+        "demos": {
+            "demo_poisson": "Poisson equation — fundamental elliptic PDE",
+            "demo_mixed-poisson": "Mixed Poisson with Raviart-Thomas elements and block preconditioner",
+            "demo_stokes": "Stokes equations with Taylor-Hood elements",
+            "demo_navier-stokes": "Divergence-conforming DG for Navier-Stokes",
+            "demo_elasticity": "Linear elasticity with algebraic multigrid (GAMG)",
+            "demo_static-condensation": "Static condensation of mixed elasticity (Cook's membrane)",
+            "demo_cahn-hilliard": "Cahn-Hilliard phase-field equation (spinodal decomposition)",
+            "demo_biharmonic": "Biharmonic equation with interior penalty DG",
+            "demo_helmholtz": "Helmholtz equation (complex-valued)",
+            "demo_scattering_boundary_conditions": "EM scattering from wire (scattering BCs)",
+            "demo_pml": "EM scattering from wire (perfectly matched layer)",
+            "demo_half_loaded_waveguide": "Electromagnetic modal analysis (SLEPc eigenvalue)",
+            "demo_axis": "Axisymmetric EM scattering from sphere",
+            "demo_poisson_matrix_free": "Matrix-free CG solver for Poisson",
+            "demo_types": "Solving PDEs with different scalar types (float32/64, complex64/128)",
+            "demo_lagrange_variants": "Lagrange element variants (equispaced, GLL, Chebyshev)",
+            "demo_gmsh": "Mesh generation with Gmsh integration",
+            "demo_interpolation-io": "Interpolation and I/O operations",
+            "demo_pyvista": "Visualization with PyVista",
+            "demo_pyamg": "Poisson and elasticity with pyamg (serial AMG)",
+        },
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TUTORIAL CATALOG — jsdokken FEniCSx tutorial chapters
+    # ═══════════════════════════════════════════════════════════════════════════
+    "tutorial_catalog": {
+        "description": "Complete catalog of jsdokken.com/dolfinx-tutorial chapters.",
+        "chapter1_fundamentals": {
+            "fundamentals": "Solving the Poisson equation — basic FEniCSx workflow",
+            "complex_mode": "Poisson with complex numbers",
+        },
+        "chapter2_gallery": {
+            "heat_equation": "Transient heat equation (backward Euler)",
+            "diffusion_code": "Diffusion of a Gaussian function",
+            "nonlinpoisson": "Nonlinear Poisson (Newton method)",
+            "linearelasticity": "Linear elasticity (cantilever beam)",
+            "hyperelasticity": "Hyperelasticity (Neo-Hookean beam bending)",
+            "navierstokes": "Navier-Stokes theory (IPCS splitting)",
+            "ns_code1": "Channel flow (Poiseuille, IPCS)",
+            "ns_code2": "Flow past cylinder (DFG 2D-3 benchmark)",
+        },
+        "chapter3_bcs_subdomains": {
+            "neumann_dirichlet": "Combining Dirichlet and Neumann BCs",
+            "robin_neumann_dirichlet": "Multiple Dirichlet, Neumann, and Robin conditions",
+            "multiple_dirichlet": "Setting multiple Dirichlet conditions",
+            "component_bc": "Component-wise Dirichlet BC (vector problems)",
+            "subdomains": "Defining subdomains for different materials",
+            "em": "Electromagnetics example (curl-curl with subdomains)",
+        },
+        "chapter4_advanced": {
+            "solvers": "Solver configuration (PETSc options)",
+            "newton_solver": "Custom Newton solver implementation",
+            "compiler_parameters": "JIT options and visualization (Pandas)",
+            "convergence": "Error control — computing convergence rates",
+        },
+        "fenics_workshop": {
+            "url": "https://jsdokken.com/FEniCS-workshop/",
+            "topics": "UFL elements, form compilation, advanced elements (Nedelec, RT), mixed problems, restriction/submeshes, optimal control, multiphysics",
+        },
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEAL.II — COMPREHENSIVE DOMAIN KNOWLEDGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DEALII_KNOWLEDGE = {
+    "poisson": {
+        "description": "Poisson equation solved with deal.II (step-3/4/5). Foundation of all elliptic PDEs.",
+        "tutorial_steps": {"step-3": "Basic Poisson on hyper_cube", "step-4": "Dim-independent with non-constant coefficients", "step-5": "Adaptive refinement with Kelly estimator", "step-6": "Higher-order elements + automatic adaptivity", "step-7": "Helmholtz + convergence tables"},
+        "function_space": "FE_Q<dim>(degree) — tensor-product Lagrange on quads/hexes",
+        "element_catalog": {
+            "FE_Q(1)": "Bilinear (2D) / trilinear (3D), standard choice",
+            "FE_Q(2)": "Biquadratic, better accuracy for smooth solutions",
+            "FE_SimplexP(1)": "Linear on triangles/tets (for simplex meshes)",
+            "FE_DGQ(p)": "Discontinuous Galerkin variant",
+        },
+        "solver": {
+            "small": "SolverCG + PreconditionSSOR (or PreconditionIdentity for debugging)",
+            "medium": "SolverCG + SparseMIC (incomplete Cholesky)",
+            "large": "SolverCG + TrilinosWrappers::PreconditionAMG (algebraic multigrid)",
+            "matrix_free": "SolverCG + PreconditionChebyshev (step-37 pattern, fastest)",
+        },
+        "grid_generators": {
+            "hyper_cube": "[0,1]^dim, all boundary_id=0 (use colorize=true for distinct IDs)",
+            "hyper_rectangle": "Box [p1,p2], boundary_ids: 0=left,1=right,2=bottom,3=top,4=back,5=front",
+            "subdivided_hyper_rectangle": "Box with per-axis subdivision control",
+            "hyper_ball": "Circular disk / ball with SphericalManifold",
+            "hyper_shell": "Annulus / spherical shell (inner/outer radius)",
+            "hyper_L": "L-shaped domain — classic corner singularity benchmark",
+            "plate_with_a_hole": "Rectangle with cylindrical hole — stress concentration",
+            "channel_with_cylinder": "Flow channel with obstacle — DFG benchmark geometry",
+            "cheese": "Rectangle with square holes",
+            "hyper_cube_slit": "Square with slit for singularity testing",
+        },
+        "output": "DataOut → VTU (standard), also VTK, gnuplot, SVG",
+        "pitfalls": [
+            "Call triangulation.refine_global() BEFORE distributing DOFs",
+            "Boundary IDs on hyper_cube: ALL faces = 0 by default; use colorize=true or hyper_rectangle",
+            "hyper_rectangle colorized: left=0, right=1, bottom=2, top=3, back=4, front=5",
+            "Use DynamicSparsityPattern → copy_from → SparsityPattern (two-step)",
+            "QGauss degree should be fe.degree + 1 for optimal convergence",
+            "For Neumann-only: solution up to constant — need mean-value constraint",
+            "Hanging node constraints MUST be applied on adaptively refined meshes (AffineConstraints)",
+            "Forgetting update_values|update_gradients|update_JxW_values in FEValues → silent wrong results",
+            "DataOut: must call build_patches() before writing",
+        ],
+    },
+    "linear_elasticity": {
+        "description": "Linear elasticity (step-8/17). Vector-valued FESystem with Lamé parameters.",
+        "tutorial_steps": {
+            "step-8": "Elasticity with FESystem, body forces, component-wise assembly",
+            "step-17": "Parallel elasticity with PETSc",
+            "step-18": "Quasi-static large-deformation (incremental loading, Lagrangian mesh)",
+            "step-44": "Nonlinear solid mechanics — compressible Neo-Hookean, three-field formulation",
+        },
+        "function_space": "FESystem<dim>(FE_Q<dim>(1), dim) — vector Lagrange",
+        "constitutive": {
+            "lame": "mu = E/(2(1+nu)), lambda = E*nu/((1+nu)(1-2*nu))",
+            "plane_stress": "lambda_star = 2*mu*lambda/(2*mu + lambda)",
+        },
+        "solver": {
+            "small": "SolverCG + PreconditionSSOR",
+            "large": "SolverCG + TrilinosWrappers::PreconditionAMG (provide rigid body modes for near-nullspace!)",
+        },
+        "pitfalls": [
+            "Use system_to_component_index() to map local DOF to physical component",
+            "For plane stress: use modified lambda_star = 2*mu*lambda/(2*mu + lambda)",
+            "Near-incompressible (nu→0.5): MUST use mixed methods to avoid volumetric locking",
+            "Providing rigid body modes to AMG dramatically improves convergence for elasticity",
+            "Component mask needed for applying BC to individual displacement components",
+            "VectorTools::interpolate_boundary_values needs ZeroFunction<dim>(dim) for vector BC",
+            "Boundary IDs depend on GridGenerator — check docs for each generator",
+        ],
+    },
+    "heat": {
+        "description": "Heat equation — transient diffusion (step-26). Adaptive mesh in time.",
+        "tutorial_steps": {
+            "step-26": "Transient heat with adaptive mesh refinement, solution interpolation between meshes",
+            "step-86": "Heat equation with PETSc time-stepping (TS) framework",
+        },
+        "function_space": "FE_Q<dim>(1) or FE_Q<dim>(2) — scalar Lagrange",
+        "time_integration": "Backward Euler (stable) or Crank-Nicolson (2nd order, theta=0.5)",
+        "solver": "SolverCG + PreconditionSSOR per time step",
+        "pitfalls": [
+            "Mass matrix assembly needed for transient terms",
+            "When using adaptive refinement in time: MUST interpolate solution from old to new mesh",
+            "Lumped mass matrix can introduce oscillations near steep gradients",
+            "Initial condition via VectorTools::interpolate or VectorTools::project",
+        ],
+    },
+    "stokes": {
+        "description": "Stokes flow (step-22). Mixed FE with Schur complement preconditioning.",
+        "tutorial_steps": {
+            "step-22": "Stokes with block preconditioner, Schur complement",
+            "step-45": "Parallel Stokes with periodic BCs using Trilinos",
+            "step-55": "Parallel Stokes with AMG for velocity block",
+            "step-56": "Stokes with geometric multigrid",
+        },
+        "function_space": "Taylor-Hood: FESystem(FE_Q<dim>(2)^dim, FE_Q<dim>(1)) — Q2/Q1",
+        "solver": {
+            "recommended": "SolverGMRES or SolverMinRes with block preconditioner",
+            "block_precon": "AMG for velocity block + pressure mass matrix for Schur complement",
+            "alternative_elements": "FE_BernardiRaugel + FE_DGP(0) for low-order stable pair",
+        },
+        "pitfalls": [
+            "MUST use inf-sup stable pair — Q1/Q1 (equal-order) is UNSTABLE",
+            "Taylor-Hood Q2/Q1 is the standard stable pair",
+            "Pressure unique only up to constant for enclosed flows — pin one pressure DOF",
+            "Schur complement preconditioning essential for efficiency at scale",
+            "Pressure mass matrix is a good Schur complement approximation",
+        ],
+    },
+    "navier_stokes": {
+        "description": "Navier-Stokes (step-57). Nonlinear extension of Stokes with Newton iteration.",
+        "tutorial_steps": {
+            "step-57": "Stationary incompressible NS, Newton + continuation in Reynolds number",
+            "step-35": "NS via projection/pressure-correction method (time-dependent)",
+        },
+        "function_space": "Same as Stokes: Taylor-Hood Q2/Q1",
+        "solver": "Newton outer loop + direct solve (UMFPACK) per Newton step for small problems",
+        "pitfalls": [
+            "Newton convergence depends critically on initial guess — use continuation in Re",
+            "Start from Stokes solution (Re→0) and gradually increase Re",
+            "For Re > ~500, need very fine mesh or stabilization",
+        ],
+    },
+    "advection_dg": {
+        "description": "Advection with DG elements (step-9/12). Discontinuous Galerkin for transport.",
+        "tutorial_steps": {
+            "step-9": "Advection with DG-like stabilization + adaptive refinement",
+            "step-12": "DG for linear advection with MeshWorker framework",
+            "step-30": "Anisotropic mesh refinement for DG advection",
+        },
+        "function_space": "FE_DGQ<dim>(p) — discontinuous Lagrange, degree 1-3",
+        "solver": "SolverGMRES + PreconditionBlockJacobi (ILU per block)",
+        "pitfalls": [
+            "Sparsity pattern must include face-coupling: DoFTools::make_flux_sparsity_pattern()",
+            "Interior penalty parameter must be large enough for stability (scales with p²)",
+            "Face integrals require careful normal orientation handling",
+            "Streamline ordering of DOFs can help GMRES convergence",
+        ],
+    },
+    "wave_equation": {
+        "description": "Wave equation (step-23/24/25). Time-dependent hyperbolic PDE.",
+        "tutorial_steps": {
+            "step-23": "Wave equation in bounded domain",
+            "step-24": "Thermoacoustic tomography with absorbing BCs",
+            "step-25": "Nonlinear wave (sine-Gordon soliton)",
+            "step-48": "Parallel wave equation, matrix-free",
+            "step-62": "Elastic wave propagation in phononic crystals",
+        },
+        "function_space": "FE_Q<dim>(1) — scalar Lagrange per time step",
+        "solver": "SolverCG + PreconditionJacobi per time step (mass matrix is SPD)",
+    },
+    "nonlinear_elasticity": {
+        "description": "Nonlinear solid mechanics (step-44). Neo-Hookean, three-field formulation.",
+        "tutorial_steps": {"step-44": "Compressible Neo-Hookean with quasi-incompressible three-field formulation"},
+        "function_space": "FESystem for displacement + pressure + dilatation (3-field)",
+        "solver": "Newton iteration with direct solver",
+        "pitfalls": [
+            "Three-field formulation needed for quasi-incompressible materials",
+            "Newton convergence requires good initial guess and small load steps",
+            "Automatic differentiation (step-71/72) avoids hand-coding Jacobians",
+        ],
+    },
+    "compressible_euler": {
+        "description": "Compressible Euler equations (step-33/67/69). Hyperbolic conservation laws.",
+        "tutorial_steps": {
+            "step-33": "Compressible Euler, basic conservation law framework",
+            "step-67": "High-order DG + explicit time stepping + matrix-free (fastest)",
+            "step-69": "Euler with first-order viscous stabilization",
+            "step-76": "Cell-centric matrix-free with MPI-3.0 shared memory",
+        },
+        "function_space": "FE_DGQ<dim>(2-5) — high-order DG",
+        "solver": "Explicit Runge-Kutta (no linear solve needed, matrix-free)",
+        "pitfalls": [
+            "MUST use DG elements — continuous elements are unstable for Euler",
+            "Numerical flux choice: Lax-Friedrichs (simple), HLLC (better shock resolution)",
+            "CFL condition mandatory for explicit time stepping",
+            "Shock capturing / slope limiting needed for discontinuous solutions",
+        ],
+    },
+    "contact": {
+        "description": "Contact / variational inequalities (step-41/42). Active set strategy.",
+        "tutorial_steps": {
+            "step-41": "Obstacle problem (variational inequality)",
+            "step-42": "3D elasto-plastic contact with isotropic hardening (parallel)",
+        },
+        "solver": "Projected CG with AMG preconditioner + active set iteration",
+        "pitfalls": [
+            "Active set changes require iterating between constraint detection and solve",
+            "Penalty parameter: too small = constraint violation, too large = ill-conditioning",
+            "Use AffineConstraints to enforce contact constraints",
+        ],
+    },
+    "grid_generator_catalog": {
+        "description": "Complete catalog of deal.II GridGenerator functions for mesh creation.",
+        "generators": {
+            "hyper_cube": {"geometry": "Unit cube [0,1]^dim", "dims": "1D,2D,3D", "boundary_ids": "All = 0 (colorize=true for distinct)"},
+            "hyper_rectangle": {"geometry": "Axis-aligned box [p1,p2]", "dims": "1D,2D,3D", "boundary_ids": "x-=0,x+=1,y-=2,y+=3,z-=4,z+=5"},
+            "subdivided_hyper_rectangle": {"geometry": "Box with per-axis subdivision control", "dims": "1D,2D,3D"},
+            "hyper_ball": {"geometry": "Circular disk / ball", "dims": "2D,3D", "notes": "SphericalManifold attached"},
+            "hyper_shell": {"geometry": "Annulus / spherical shell", "dims": "2D,3D", "notes": "Inner + outer radius"},
+            "hyper_L": {"geometry": "L-shaped domain", "dims": "2D", "notes": "Classic corner singularity benchmark"},
+            "plate_with_a_hole": {"geometry": "Rectangle with cylindrical hole", "dims": "2D", "notes": "Stress concentration factor"},
+            "channel_with_cylinder": {"geometry": "Flow channel with obstacle", "dims": "2D,3D", "notes": "DFG benchmark (Schäfer-Turek)"},
+            "cylinder": {"geometry": "Cylinder (circular cross-section)", "dims": "3D"},
+            "cylinder_shell": {"geometry": "Hollow cylinder (pipe wall)", "dims": "3D"},
+            "truncated_cone": {"geometry": "Cone frustum", "dims": "3D"},
+            "cheese": {"geometry": "Rectangle with square holes", "dims": "2D,3D"},
+            "hyper_cross": {"geometry": "Cross/plus shape", "dims": "2D,3D"},
+            "pipe_junction": {"geometry": "Pipe bifurcation", "dims": "3D"},
+            "Airfoil::create_triangulation": {"geometry": "NACA/Joukowski airfoil", "dims": "2D"},
+            "extrude_triangulation": {"geometry": "Extrude 2D → 3D", "notes": "Layered 3D from 2D base"},
+            "merge_triangulations": {"geometry": "Union of two meshes", "notes": "Combine separate grids"},
+        },
+    },
+    "solver_catalog": {
+        "description": "Complete deal.II solver and preconditioner catalog.",
+        "solvers": {
+            "SolverCG": "Conjugate Gradient — SPD systems (Poisson, elasticity, heat)",
+            "SolverGMRES": "Restarted GMRES — non-symmetric (advection, NS)",
+            "SolverFGMRES": "Flexible GMRES — variable preconditioner per iteration",
+            "SolverBicgstab": "BiCGStab — non-symmetric alternative",
+            "SolverMinRes": "MinRes — symmetric indefinite (Stokes, saddle-point)",
+            "SparseDirectUMFPACK": "Direct — small/medium, complex-valued, debugging",
+        },
+        "preconditioners": {
+            "PreconditionIdentity": "None — debugging only",
+            "PreconditionJacobi": "Diagonal scaling — DG mass matrices",
+            "PreconditionSSOR": "Symmetric SOR — CG-compatible, general purpose",
+            "PreconditionChebyshev": "Polynomial — matrix-free multigrid smoothers (step-37)",
+            "SparseMIC": "Incomplete Cholesky — SPD systems",
+            "SparseILU": "Incomplete LU — general non-symmetric",
+            "TrilinosWrappers::PreconditionAMG": "Algebraic multigrid (ML/MueLu) — large elliptic/elasticity",
+        },
+        "by_physics": {
+            "poisson": "CG + SSOR (small) or CG + AMG (large) or CG + Chebyshev+GMG (fastest)",
+            "elasticity": "CG + AMG (provide rigid body modes for near-nullspace)",
+            "heat_transient": "CG + SSOR per time step",
+            "stokes": "GMRES/MinRes + block preconditioner (AMG for velocity, mass-matrix for Schur)",
+            "navier_stokes": "GMRES + block precon, Newton outer loop",
+            "advection_dg": "GMRES + ILU or block-Jacobi",
+            "euler_dg": "Explicit RK (no linear solve) — matrix-free",
+            "wave": "CG + Jacobi per time step (mass matrix is SPD)",
+        },
+    },
+    "element_catalog": {
+        "description": "Complete deal.II finite element catalog.",
+        "elements": {
+            "FE_Q(p)": {"type": "Lagrange Qp", "continuity": "C0", "use": "Poisson, heat, elasticity — standard choice"},
+            "FE_DGQ(p)": {"type": "DG Lagrange", "continuity": "Discontinuous", "use": "Advection, Euler, transport"},
+            "FESystem(FE_Q(p), dim)": {"type": "Vector Lagrange", "continuity": "C0", "use": "Elasticity, displacement"},
+            "FE_RaviartThomas(p)": {"type": "H(div) conforming", "continuity": "Normal continuous", "use": "Darcy flow, mixed Poisson"},
+            "FE_Nedelec(p)": {"type": "H(curl) conforming", "continuity": "Tangential continuous", "use": "Maxwell, electromagnetics"},
+            "FE_SimplexP(p)": {"type": "Simplex Lagrange", "continuity": "C0", "use": "Triangle/tet meshes"},
+            "FE_BernardiRaugel": {"type": "Enriched velocity", "continuity": "C0", "use": "Low-order inf-sup stable Stokes"},
+            "FE_Bernstein(p)": {"type": "Bernstein polynomials", "continuity": "C0", "use": "Positivity-preserving"},
+        },
+    },
+    "tutorial_catalog": {
+        "description": "Complete deal.II tutorial step catalog — maps step numbers to physics types and key features.",
+        "step-1": "Grid generation and output",
+        "step-2": "DOF setup and sparsity patterns",
+        "step-3": "Poisson equation (basic)",
+        "step-4": "Non-constant coefficients (dim-independent)",
+        "step-5": "Adaptive refinement (Kelly estimator)",
+        "step-6": "Higher order elements + automatic adaptivity",
+        "step-7": "Helmholtz + Neumann BCs + convergence tables",
+        "step-8": "Elasticity (vector FE, FESystem)",
+        "step-9": "Advection with DG + adaptive refinement",
+        "step-12": "DG advection (MeshWorker framework)",
+        "step-15": "Minimal surface (nonlinear, Newton)",
+        "step-16": "Geometric multigrid for Laplace",
+        "step-17": "Parallel elasticity with PETSc",
+        "step-18": "Quasi-static large-deformation elasticity",
+        "step-20": "Mixed Darcy flow (Raviart-Thomas)",
+        "step-22": "Stokes flow (Schur complement preconditioning)",
+        "step-23": "Wave equation (time-dependent hyperbolic)",
+        "step-26": "Heat equation (transient, adaptive mesh in time)",
+        "step-27": "hp-FEM (combined h- and p-refinement)",
+        "step-29": "Complex Helmholtz / scattering",
+        "step-31": "Boussinesq convection (2D)",
+        "step-33": "Compressible Euler equations",
+        "step-35": "Navier-Stokes (projection method)",
+        "step-36": "Eigenvalue problems (SLEPc)",
+        "step-37": "Matrix-free methods (Laplace, fastest pattern)",
+        "step-40": "Parallel with Trilinos (distributed)",
+        "step-41": "Obstacle / contact problem",
+        "step-42": "3D elasto-plastic contact",
+        "step-44": "Nonlinear solid mechanics (Neo-Hookean, 3-field)",
+        "step-45": "Parallel Stokes with periodic BCs",
+        "step-47": "Biharmonic / Kirchhoff plate (C0 interior penalty)",
+        "step-49": "Complex mesh generation + external mesh import",
+        "step-51": "HDG (hybridizable DG) for convection-diffusion",
+        "step-55": "Parallel Stokes + AMG",
+        "step-56": "Stokes with geometric multigrid",
+        "step-57": "Navier-Stokes (stationary, Newton + continuation)",
+        "step-59": "DG + matrix-free (interior penalty)",
+        "step-62": "Elastic wave propagation (phononic crystals)",
+        "step-67": "Compressible Euler (high-order DG, matrix-free, explicit RK)",
+        "step-70": "Particle FSI (immersed boundary method)",
+        "step-71": "Automatic differentiation (magneto-mechanical coupling)",
+        "step-72": "AD for Jacobians (nonlinear PDEs)",
+        "step-74": "SIPG DG for Poisson",
+        "step-77": "SUNDIALS KINSOL nonlinear solver",
+        "step-79": "Topology optimization (SIMP)",
+        "step-81": "Time-harmonic Maxwell equations",
+        "step-85": "CutFEM for Poisson on circular domain",
+        "step-87": "Remote point evaluation on distributed meshes",
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEBIO — COMPREHENSIVE DOMAIN KNOWLEDGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_FEBIO_KNOWLEDGE = {
+    "linear_elasticity": {
+        "description": "Linear elasticity with FEBio — isotropic elastic material. XML input (.feb), v4.0.",
+        "input_format": "FEBio XML (.feb), version 4.0",
+        "solver": "Newton-Raphson with direct linear solver",
+        "materials": {
+            "isotropic elastic": {"E": "Young's modulus (Pa)", "v": "Poisson's ratio (NOTE: lowercase v, not nu)"},
+        },
+        "pitfalls": [
+            "FEBio uses lowercase 'v' for Poisson's ratio (not 'nu')",
+            "Element connectivity is 1-indexed",
+            "MeshDomains section required in v4.0 (links domain to material)",
+            "LoadData section with load_controller needed for prescribed BCs",
+        ],
+    },
+    "hyperelasticity": {
+        "description": "Nonlinear hyperelasticity — Neo-Hookean, Mooney-Rivlin, Ogden, HGO (tissue).",
+        "materials": {
+            "neo-Hookean": {"E": "Young's modulus", "v": "Poisson's ratio"},
+            "Mooney-Rivlin": {"c1": "1st constant", "c2": "2nd constant", "k": "bulk modulus"},
+            "Ogden": {"c1-c6": "Ogden constants", "m1-m6": "Ogden exponents", "k": "bulk modulus"},
+            "Holzapfel-Gasser-Ogden": {"c": "matrix modulus", "k1": "fiber stiffness", "k2": "fiber exponent",
+                                        "kappa": "dispersion (0=aligned, 1/3=isotropic)", "theta": "fiber angle"},
+        },
+        "pitfalls": [
+            "Use 'STATIC' analysis for quasi-static loading",
+            "Large deformations require proper step size control",
+            "Convergence issues: reduce step size or use line search",
+            "HGO model: fiber direction via local coordinate system",
+        ],
+    },
+    "biphasic": {
+        "description": "Biphasic poroelasticity — solid + fluid phases. Key for cartilage, hydrogels.",
+        "materials": {
+            "biphasic": {"solid": "Any hyperelastic + 'permeability' material",
+                         "permeability": "Holmes-Mow or constant permeability"},
+        },
+        "pitfalls": [
+            "Requires Module type='biphasic'",
+            "Fluid pressure BC via 'fluid pressure' boundary condition",
+            "Time stepping critical — fast diffusion requires small dt initially",
+        ],
+    },
+    "heat": {
+        "description": "Heat conduction (steady-state). Module type='heat'.",
+        "solver": "Direct or iterative",
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CROSS-SOLVER VALIDATION KNOWLEDGE
+# Verified results from 10 benchmarks across FEniCS, deal.II, and 4C.
+# This knowledge helps fresh agents set up correct simulations and verify results.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_CROSS_SOLVER_KNOWLEDGE = {
+    "cross_validation_principles": {
+        "description": (
+            "Cross-solver validation means running the same problem on multiple independent "
+            "solvers and checking that they produce consistent results. This is a powerful "
+            "verification technique — if two solvers agree, it's strong evidence both are correct."
+        ),
+        "methodology": [
+            "Define the problem precisely (domain, BCs, material, source term)",
+            "Run on 2+ solvers with comparable discretizations",
+            "Compare key output quantities (max field value, tip displacement, etc.)",
+            "Expect small differences (1-3%) from different element types — this is normal",
+            "Large differences (>5%) indicate a setup error in one of the solvers",
+        ],
+    },
+    "element_type_effects": {
+        "description": (
+            "Different solvers use different default element types. P1 triangles and Q1 "
+            "quadrilaterals give slightly different results on the same mesh density. Both "
+            "converge to the same solution under refinement. Differences of 1-3% between "
+            "tri and quad elements are expected and normal — not a sign of error."
+        ),
+    },
+    "4c_inline_mesh_notes": {
+        "description": (
+            "4C inline mesh (NODE COORDS + ELEMENTS) creates self-contained input files "
+            "without external Exodus mesh dependencies."
+        ),
+        "key_pitfalls": [
+            "Elasticity NUMDOF=3 even in 2D (z-dof constrained to 0)",
+            "Element ordering: node IDs counter-clockwise for QUAD4",
+            "IO/RUNTIME VTK OUTPUT section required for ParaView output",
+        ],
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MCP TOOL REGISTRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def register_deep_knowledge_tools(mcp: FastMCP):
+
+    @mcp.tool()
+    def get_deep_knowledge(solver: str, physics: str) -> str:
+        """Get comprehensive domain knowledge for a physics module.
+
+        Returns everything needed to set up a simulation correctly:
+        materials, solver options, time integration, pitfalls, element types,
+        reference solutions, and best practices.
+
+        This is MUCH more detailed than get_physics_knowledge — use this
+        when you need to understand a physics problem deeply.
+
+        Args:
+            solver: Backend name ('fenics', 'fourc', 'dealii', 'febio')
+            physics: Physics key (e.g. 'poisson', 'navier_stokes', 'fsi', 'particle_pd')
+        """
+        knowledge_map = {
+            "fourc": _4C_KNOWLEDGE,
+            "4c": _4C_KNOWLEDGE,
+            "fenics": _FENICS_KNOWLEDGE,
+            "fenicsx": _FENICS_KNOWLEDGE,
+            "dealii": _DEALII_KNOWLEDGE,
+            "deal.ii": _DEALII_KNOWLEDGE,
+            "febio": _FEBIO_KNOWLEDGE,
+        }
+
+        db = knowledge_map.get(solver.lower())
+        if not db:
+            return f"Unknown solver: {solver}. Available: fourc, fenics, dealii, febio"
+
+        k = db.get(physics.lower())
+        if not k:
+            available = sorted(db.keys())
+            return f"No knowledge for '{physics}' in {solver}. Available: {', '.join(available)}"
+
+        return json.dumps(k, indent=2, default=str)
+
+    @mcp.tool()
+    def get_all_pitfalls(solver: str) -> str:
+        """Get ALL pitfalls/common mistakes for a solver, across all physics.
+
+        Critical for preventing simulation failures. Returns a consolidated
+        list organized by physics module.
+
+        Args:
+            solver: Backend name ('fenics', 'fourc', 'dealii', 'febio')
+        """
+        knowledge_map = {
+            "fourc": _4C_KNOWLEDGE, "fenics": _FENICS_KNOWLEDGE,
+            "dealii": _DEALII_KNOWLEDGE, "febio": _FEBIO_KNOWLEDGE,
+        }
+        db = knowledge_map.get(solver.lower())
+        if not db:
+            return f"Unknown solver: {solver}"
+
+        lines = [f"# All Pitfalls for {solver}\n"]
+        for physics, k in sorted(db.items()):
+            pitfalls = k.get("pitfalls", [])
+            if pitfalls:
+                lines.append(f"## {physics}")
+                for p in pitfalls:
+                    lines.append(f"- {p}")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def get_material_catalog(solver: str) -> str:
+        """Get the complete material catalog for a solver backend.
+
+        Lists all material types, their parameters, valid ranges,
+        and which physics modules use them.
+
+        Args:
+            solver: Backend name ('fenics', 'fourc', 'dealii', 'febio')
+        """
+        knowledge_map = {
+            "fourc": _4C_KNOWLEDGE, "fenics": _FENICS_KNOWLEDGE,
+            "dealii": _DEALII_KNOWLEDGE, "febio": _FEBIO_KNOWLEDGE,
+        }
+        db = knowledge_map.get(solver.lower())
+        if not db:
+            return f"Unknown solver: {solver}"
+
+        catalog = {}
+        for physics, k in db.items():
+            materials = k.get("materials", {})
+            for mat_name, mat_info in materials.items():
+                if mat_name not in catalog:
+                    catalog[mat_name] = {"used_in": [], "parameters": mat_info}
+                catalog[mat_name]["used_in"].append(physics)
+
+        return json.dumps(catalog, indent=2, default=str)
+
+    @mcp.tool()
+    def get_solver_guidance(physics: str) -> str:
+        """Get cross-solver comparison and recommendation for a physics problem.
+
+        Compares how each available solver handles this physics type,
+        including strengths, weaknesses, and which to choose.
+
+        Args:
+            physics: Physics type (e.g. 'poisson', 'navier_stokes', 'fsi', 'hyperelasticity')
+        """
+        lines = [f"# Solver Guidance for: {physics}\n"]
+
+        all_knowledge = {
+            "FEniCSx": _FENICS_KNOWLEDGE,
+            "deal.II": _DEALII_KNOWLEDGE,
+            "4C": _4C_KNOWLEDGE,
+            "FEBio": _FEBIO_KNOWLEDGE,
+        }
+
+        found_any = False
+        for solver_name, db in all_knowledge.items():
+            k = db.get(physics.lower())
+            if k:
+                found_any = True
+                lines.append(f"## {solver_name}")
+                lines.append(f"**Description:** {k.get('description', 'N/A')}")
+                if "solver" in k:
+                    lines.append(f"**Solver:** {json.dumps(k['solver'], default=str)}")
+                if "pitfalls" in k:
+                    lines.append("**Key pitfalls:**")
+                    for p in k["pitfalls"][:3]:
+                        lines.append(f"  - {p}")
+                if "variants" in k:
+                    lines.append(f"**Templates:** {', '.join(k['variants'])}")
+                lines.append("")
+
+        if not found_any:
+            lines.append(f"No solver has knowledge for '{physics}'.")
+            lines.append("Available physics across all solvers:")
+            all_physics = set()
+            for db in all_knowledge.values():
+                all_physics.update(db.keys())
+            for p in sorted(all_physics):
+                lines.append(f"  - {p}")
+
+        # Recommendation
+        backend = None
+        avail = available_backends()
+        for b in avail:
+            for p in b.supported_physics():
+                if p.name == physics.lower():
+                    backend = b
+                    break
+            if backend:
+                break
+
+        if backend:
+            lines.append(f"\n**Recommended:** {backend.display_name()} (available on this machine)")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def get_solver_catalog(solver: str) -> str:
+        """Get the full capability catalog for a specific solver.
+
+        For deal.II: complete tutorial step catalog (50+ steps)
+        For 4C: all physics modules with problem types and templates
+        For FEniCS: all physics with weak forms and solver options
+        For FEBio: material catalog including biomechanics-specific
+
+        Args:
+            solver: Backend name ('fenics', 'fourc', 'dealii', 'febio')
+        """
+        knowledge_map = {
+            "fourc": _4C_KNOWLEDGE, "4c": _4C_KNOWLEDGE,
+            "fenics": _FENICS_KNOWLEDGE, "fenicsx": _FENICS_KNOWLEDGE,
+            "dealii": _DEALII_KNOWLEDGE, "deal.ii": _DEALII_KNOWLEDGE,
+            "febio": _FEBIO_KNOWLEDGE,
+        }
+        db = knowledge_map.get(solver.lower())
+        if not db:
+            return f"Unknown solver: {solver}. Available: fourc, fenics, dealii, febio"
+
+        lines = [f"# {solver} — Full Capability Catalog\n"]
+        for key, k in sorted(db.items()):
+            desc = k.get("description", "")
+            lines.append(f"## {key}")
+            if desc:
+                lines.append(f"{desc}")
+            if "problem_type" in k:
+                lines.append(f"**Problem type:** {k['problem_type']}")
+            if "weak_form" in k:
+                lines.append(f"**Weak form:** {k['weak_form']}")
+            if "variants" in k:
+                lines.append(f"**Templates:** {', '.join(k['variants'])}")
+            if "tutorial_steps" in k:
+                for step, sdesc in k["tutorial_steps"].items():
+                    lines.append(f"  - {step}: {sdesc}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def get_cross_solver_reference(problem: str = "") -> str:
+        """Get verified cross-solver reference solutions and validation knowledge.
+
+        Returns known-good reference values for standard FEM benchmark problems,
+        verified across FEniCS, deal.II, and 4C. Essential for:
+        - Checking if your simulation result is correct
+        - Understanding expected element-type differences (tri vs quad)
+        - Setting up matched cross-solver comparisons
+        - Knowing 4C inline mesh normalization rules
+
+        Args:
+            problem: Specific problem (e.g. 'poisson', 'heat', 'elasticity')
+                    or empty for all reference data
+        """
+        if problem:
+            key = problem.lower().replace(" ", "_")
+            # Search in reference solutions
+            for k, v in _CROSS_SOLVER_KNOWLEDGE["reference_solutions"].items():
+                if key in k:
+                    return json.dumps({k: v}, indent=2)
+            return f"No reference for '{problem}'. Available: {list(_CROSS_SOLVER_KNOWLEDGE['reference_solutions'].keys())}"
+        return json.dumps(_CROSS_SOLVER_KNOWLEDGE, indent=2)

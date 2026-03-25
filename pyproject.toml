@@ -1,0 +1,56 @@
+[project]
+name = "open-fem-agent"
+version = "0.2.0"
+description = "Open-source MCP server connecting LLMs to 8 FEM codes for AI-driven simulation, coupling, and solver development"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Alexander", email = ""},
+]
+keywords = ["fem", "mcp", "simulation", "multiphysics", "coupling", "ai-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+]
+
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "pyvista>=0.43",
+    "meshio>=5.3",
+    "h5py>=3.10",
+    "matplotlib>=3.8",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# Individual solver backends
+fenics = ["fenics-dolfinx>=0.8", "gmsh>=4.12"]
+ngsolve = ["ngsolve>=6.2"]
+skfem = ["scikit-fem>=10.0"]
+kratos = ["KratosMultiphysics>=10.0"]
+dune = ["dune-fem>=2.10", "mpi4py>=3.0"]
+
+# Coupling infrastructure
+precice = ["pyprecice>=3.0"]
+
+# All pip-installable backends
+all-solvers = [
+    "ngsolve>=6.2",
+    "scikit-fem>=10.0",
+    "KratosMultiphysics>=10.0",
+]
+
+# Development
+dev = ["pytest>=7.0", "pytest-asyncio>=0.20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"

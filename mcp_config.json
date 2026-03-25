@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "open-fem-agent": {
+      "command": "python",
+      "args": ["-m", "server"],
+      "cwd": "${workspaceFolder}/src",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "FOURC_ROOT": "/home/alexander/4C",
+        "FOURC_BINARY": "/home/alexander/4C/build/4C",
+        "LD_LIBRARY_PATH": "/opt/4C-dependencies/lib",
+        "FENICS_PYTHON": "/home/alexander/miniconda3/envs/fenics/bin/python",
+        "PYVISTA_OFF_SCREEN": "true"
+      }
+    }
+  }
+}
