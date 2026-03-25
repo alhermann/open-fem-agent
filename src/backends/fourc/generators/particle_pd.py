@@ -352,6 +352,29 @@ class ParticlePDGenerator(BaseGenerator):
                     "and the DOMAINBOUNDINGBOX must have a small z-extent (e.g., "
                     "-0.01 to 0.01)."
                 ),
+                (
+                    "LOADING: boundaryphase particles interact with pdphase via "
+                    "REPULSIVE contact only (std::min(0.0, ...)).  They CANNOT apply "
+                    "tensile loads — only compressive impact.  For tension/opening "
+                    "problems (DCB, fracture), use INITIAL_VELOCITY_FIELD to impart "
+                    "kinetic energy, or PDFIXED flag on boundary particles with "
+                    "prescribed Dirichlet displacement."
+                ),
+                (
+                    "PDFIXED: per-particle flag that fixes a particle in place "
+                    "(zero displacement).  Add 'PDFIXED 1' to the particle definition "
+                    "string.  Use for clamped supports in fracture problems."
+                ),
+                (
+                    "IO/RUNTIME VTK OUTPUT sections are INCOMPATIBLE with particle "
+                    "problems — they crash 4C.  Remove them.  4C writes particle VTU "
+                    "files automatically via the PARTICLE DYNAMIC output mechanism."
+                ),
+                (
+                    "Critical stretch formula differs between plane stress and plane "
+                    "strain.  Plane strain (2D): s_c = sqrt(5*G_Ic/(9*K_b*delta)) "
+                    "where K_b = E/(3*(1-2*nu)).  Plane stress: s_c = sqrt(5*G_Ic/(6*E*delta))."
+                ),
             ],
             "typical_experiments": [
                 {
