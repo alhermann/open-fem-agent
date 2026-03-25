@@ -156,9 +156,9 @@ def get_env_with_source_root(env_var: str) -> dict:
     if not root or not Path(root).is_dir():
         return env
 
-    # Check for Python source builds (build/, lib/, install/)
-    for build_dir in ["build/lib", "build", "build/Release/lib", "build/Release",
-                      "install/lib", "lib"]:
+    # Check for Python source builds — cmake install/ takes priority, then build/
+    for build_dir in ["install", "install/lib", "build/lib", "build",
+                      "build/Release/lib", "build/Release", "lib"]:
         candidate = Path(root) / build_dir
         if candidate.is_dir():
             # Check if it contains Python packages
@@ -174,5 +174,15 @@ def get_env_with_source_root(env_var: str) -> dict:
     pp = env.get("PYTHONPATH", "")
     if root not in pp:
         env["PYTHONPATH"] = f"{root}:{pp}" if pp else root
+
+    # Add shared library paths (for compiled C++ extensions)
+    for libs_dir in ["install/libs", "install/lib", "build/libs", "build/lib", "lib"]:
+        candidate = Path(root) / libs_dir
+        if candidate.is_dir() and any(candidate.glob("*.so")):
+            ld = env.get("LD_LIBRARY_PATH", "")
+            libs_path = str(candidate)
+            if libs_path not in ld:
+                env["LD_LIBRARY_PATH"] = f"{libs_path}:{ld}" if ld else libs_path
+            break
 
     return env
