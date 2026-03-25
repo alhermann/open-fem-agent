@@ -372,9 +372,13 @@ def _generate_cmakelists(target_name: str) -> str:
     dealii_root = os.environ.get("DEALII_ROOT", "")
     extra_hints = ""
     if dealii_root:
-        for build_dir in ["build", "build/release", "build/Release"]:
+        for build_dir in ["build/lib/cmake/deal.II", "build", "build/release",
+                          "build/Release", "install/lib/cmake/deal.II"]:
             candidate = Path(dealii_root) / build_dir
-            if (candidate / "deal.IIConfig.cmake").exists() or candidate.is_dir():
+            if (candidate / "deal.IIConfig.cmake").exists():
+                extra_hints = f" {candidate}"
+                break
+            elif candidate.is_dir():
                 extra_hints = f" {candidate}"
                 break
         if not extra_hints and Path(dealii_root).is_dir():
