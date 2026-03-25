@@ -1,0 +1,240 @@
+"""Kratos specialized application generators and knowledge.
+
+Covers: PoroMechanics, ShallowWater, WindEngineering, Dam, ConstitutiveLaws,
+ThermalDEM, SwimmingDEM, DEM-Structures, FEM-DEM, CableNet, Chimera,
+Droplet, FreeSurface, FluidBiomedical, FluidHydraulics, Optimization.
+"""
+
+
+def _generic_kratos_template(app_name: str, pip_name: str, capabilities: list) -> str:
+    """Generate a generic Kratos application check template."""
+    caps_str = str(capabilities)
+    return f'''\
+"""{app_name} — Kratos"""
+import json
+try:
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.{app_name}
+    print("{app_name} available")
+    summary = {{"note": "{app_name} available", "capabilities": {caps_str}}}
+except ImportError:
+    print("{app_name} not installed")
+    print("Install: pip install {pip_name}")
+    summary = {{"note": "not installed"}}
+with open("results_summary.json", "w") as f: json.dump(summary, f, indent=2)
+'''
+
+
+def _poromechanics_2d(params: dict) -> str:
+    return _generic_kratos_template("PoromechanicsApplication",
+        "KratosPoromechanicsApplication",
+        ["consolidation", "fracture_propagation", "dam_engineering", "tunneling"])
+
+def _shallow_water_2d(params: dict) -> str:
+    return _generic_kratos_template("ShallowWaterApplication",
+        "KratosShallowWaterApplication",
+        ["shallow_water_equations", "saint_venant", "dam_break_2d", "flood_simulation"])
+
+def _wind_engineering_2d(params: dict) -> str:
+    return _generic_kratos_template("WindEngineeringApplication",
+        "KratosWindEngineeringApplication",
+        ["wind_loading", "atmospheric_boundary_layer", "vortex_shedding_wind"])
+
+def _dam_2d(params: dict) -> str:
+    return _generic_kratos_template("DamApplication",
+        "KratosDamApplication",
+        ["thermal_dam", "mechanical_dam", "thermo_mechanical_dam", "seepage"])
+
+def _constitutive_laws_2d(params: dict) -> str:
+    return _generic_kratos_template("ConstitutiveLawsApplication",
+        "KratosConstitutiveLawsApplication",
+        ["hyperelastic_models", "plasticity_models", "damage_models",
+         "viscoplasticity", "small_strain_isotropic_plasticity"])
+
+def _thermal_dem_2d(params: dict) -> str:
+    return _generic_kratos_template("ThermalDEMApplication",
+        "KratosThermalDEMApplication",
+        ["heat_conduction_particles", "convection_radiation_particles",
+         "sintering", "thermal_granular_flow"])
+
+def _swimming_dem_2d(params: dict) -> str:
+    return _generic_kratos_template("SwimmingDEMApplication",
+        "KratosSwimmingDEMApplication",
+        ["particle_laden_flow", "fluidized_bed", "sedimentation",
+         "drag_models", "CFD_DEM_coupling"])
+
+def _dem_structures_2d(params: dict) -> str:
+    return _generic_kratos_template("DemStructuresCouplingApplication",
+        "KratosDemStructuresCouplingApplication",
+        ["DEM_FEM_coupling", "impact_on_structures", "blast_loading"])
+
+def _fem_to_dem_2d(params: dict) -> str:
+    return _generic_kratos_template("FemToDemApplication",
+        "KratosFemToDemApplication",
+        ["fracture_FEM_to_DEM", "progressive_fracture", "concrete_fracture"])
+
+def _cable_net_2d(params: dict) -> str:
+    return _generic_kratos_template("CableNetApplication",
+        "KratosCableNetApplication",
+        ["cable_elements", "net_structures", "membrane_cable_coupling", "form_finding"])
+
+def _chimera_2d(params: dict) -> str:
+    return _generic_kratos_template("ChimeraApplication",
+        "KratosChimeraApplication",
+        ["overset_grids", "chimera_method", "moving_bodies_in_flow"])
+
+def _droplet_2d(params: dict) -> str:
+    return _generic_kratos_template("DropletDynamicsApplication",
+        "KratosDropletDynamicsApplication",
+        ["droplet_impact", "spreading", "contact_angle", "two_phase_droplet"])
+
+def _free_surface_2d(params: dict) -> str:
+    return _generic_kratos_template("FreeSurfaceApplication",
+        "KratosFreeSurfaceApplication",
+        ["free_surface_flow", "wave_propagation", "sloshing_Eulerian"])
+
+def _fluid_biomedical_2d(params: dict) -> str:
+    return _generic_kratos_template("FluidDynamicsBiomedicalApplication",
+        "KratosFluidDynamicsBiomedicalApplication",
+        ["blood_flow", "hemodynamics", "wall_shear_stress", "aneurysm_flow"])
+
+def _fluid_hydraulics_2d(params: dict) -> str:
+    return _generic_kratos_template("FluidDynamicsHydraulicsApplication",
+        "KratosFluidDynamicsHydraulicsApplication",
+        ["open_channel_flow", "pipe_flow", "hydraulic_structures", "spillway_flow"])
+
+def _optimization_2d(params: dict) -> str:
+    return _generic_kratos_template("OptimizationApplication",
+        "KratosOptimizationApplication",
+        ["gradient_based_optimization", "response_functions", "constraint_handling",
+         "multi_objective", "adjoint_sensitivity"])
+
+
+KNOWLEDGE = {
+    "poromechanics": {
+        "description": "Poromechanics: consolidation, fracture in porous media, dam/tunnel engineering",
+        "application": "PoromechanicsApplication",
+        "elements": ["SmallStrainUPwDiffOrderElement2D6N", "SmallStrainUPwDiffOrderElement3D10N"],
+        "capabilities": ["u-pw coupling", "fracture_propagation", "interface_elements"],
+        "pitfalls": ["Different from GeoMechanicsApplication — this focuses on fracture in porous media"],
+    },
+    "shallow_water": {
+        "description": "Shallow water equations (Saint-Venant) for flood/dam-break/coastal simulation",
+        "application": "ShallowWaterApplication",
+        "elements": ["ShallowWaterElement2D3N", "ShallowWaterElement2D4N"],
+        "solver_types": ["explicit", "semi-implicit"],
+        "pitfalls": ["2D only (depth-averaged)", "Wetting/drying needs special treatment",
+                     "Friction: Manning formula with roughness coefficient"],
+    },
+    "wind_engineering": {
+        "description": "Wind engineering: atmospheric boundary layer, wind loading on structures",
+        "application": "WindEngineeringApplication",
+        "capabilities": ["ABL_inlet_generation", "wind_pressure_coefficients", "vortex_shedding"],
+        "pitfalls": ["Requires FluidDynamicsApplication + RANSApplication"],
+    },
+    "dam": {
+        "description": "Dam engineering: thermal-mechanical analysis, seepage, cracking",
+        "application": "DamApplication",
+        "capabilities": ["thermal_analysis", "mechanical_analysis", "thermo_mechanical_coupled",
+                         "seepage_analysis", "joint_elements"],
+    },
+    "constitutive_laws": {
+        "description": "Extended constitutive law library: hyperelastic, plasticity, damage, viscoplastic",
+        "application": "ConstitutiveLawsApplication",
+        "laws": {
+            "hyperelastic": ["Ogden", "Yeoh", "Arruda-Boyce", "Blatz-Ko"],
+            "plasticity": ["VonMises", "Tresca", "DruckerPrager", "MohrCoulomb",
+                           "ModifiedCamClay", "CriticalStateLine"],
+            "damage": ["Mazars", "SimoJu", "RankineFragile", "ModifiedMohrCoulomb"],
+            "viscoplastic": ["Perzyna", "DruckerPragerViscoplastic"],
+        },
+        "pitfalls": ["These laws extend StructuralMechanicsApplication",
+                     "Must be registered via constitutive_law.name in MaterialsDEM.json"],
+    },
+    "thermal_dem": {
+        "description": "Thermal DEM: heat transfer between particles (conduction, convection, radiation)",
+        "application": "ThermalDEMApplication",
+        "capabilities": ["particle_heat_conduction", "convection", "radiation", "sintering"],
+        "pitfalls": ["Requires DEMApplication as base", "Temperature DOF per particle"],
+    },
+    "swimming_dem": {
+        "description": "Swimming DEM: particles in fluid flow (CFD-DEM coupling)",
+        "application": "SwimmingDEMApplication",
+        "capabilities": ["particle_laden_flow", "fluidized_bed", "sedimentation",
+                         "Schiller-Naumann_drag", "virtual_mass", "Basset_history"],
+        "pitfalls": ["Requires FluidDynamicsApplication + DEMApplication",
+                     "Two-way coupling: particles affect fluid momentum"],
+    },
+    "dem_structures_coupling": {
+        "description": "DEM-FEM coupling: particle impact on deformable structures",
+        "application": "DemStructuresCouplingApplication",
+        "capabilities": ["impact_loading", "blast_on_structures", "wear"],
+        "pitfalls": ["Requires DEMApplication + StructuralMechanicsApplication"],
+    },
+    "fem_to_dem": {
+        "description": "FEM-to-DEM transition: continuum fracture → discrete particles",
+        "application": "FemToDemApplication",
+        "capabilities": ["progressive_fracture", "concrete_cracking", "rock_fragmentation"],
+        "pitfalls": ["Mesh-dependent fracture — requires damage regularization"],
+    },
+    "cable_net": {
+        "description": "Cable and net structures: cables, membranes, form-finding",
+        "application": "CableNetApplication",
+        "elements": ["CableElement3D2N", "MembraneElement3D3N", "MembraneElement3D4N"],
+        "capabilities": ["form_finding", "prestress", "wind_loading_on_cables"],
+    },
+    "chimera": {
+        "description": "Chimera/overset grid method for moving bodies in flow",
+        "application": "ChimeraApplication",
+        "capabilities": ["overset_grids", "moving_bodies", "interpolation_at_interfaces"],
+        "pitfalls": ["Requires FluidDynamicsApplication", "Hole-cutting algorithm needed",
+                     "Conservation at chimera boundaries is approximate"],
+    },
+    "droplet_dynamics": {
+        "description": "Droplet dynamics: impact, spreading, contact angles",
+        "application": "DropletDynamicsApplication",
+        "capabilities": ["droplet_impact", "contact_angle", "surface_tension", "two_phase"],
+    },
+    "free_surface": {
+        "description": "Free-surface flow (Eulerian approach)",
+        "application": "FreeSurfaceApplication",
+        "capabilities": ["free_surface_tracking", "wave_propagation", "sloshing"],
+    },
+    "fluid_biomedical": {
+        "description": "Biomedical fluid dynamics: blood flow, hemodynamics",
+        "application": "FluidDynamicsBiomedicalApplication",
+        "capabilities": ["blood_flow", "WSS_computation", "aneurysm_risk", "stent_flow"],
+        "pitfalls": ["Non-Newtonian blood models (Carreau-Yasuda)", "Patient-specific geometry from CT/MRI"],
+    },
+    "fluid_hydraulics": {
+        "description": "Hydraulic fluid dynamics: open channels, pipes, spillways",
+        "application": "FluidDynamicsHydraulicsApplication",
+        "capabilities": ["open_channel", "pipe_network", "spillway", "hydraulic_jump"],
+    },
+    "optimization": {
+        "description": "General optimization framework: gradient-based, adjoint, multi-objective",
+        "application": "OptimizationApplication",
+        "capabilities": ["gradient_based", "adjoint_sensitivity", "constraint_handling",
+                         "multi_objective", "response_function_library"],
+        "pitfalls": ["Adjoint requires application-specific adjoint solver support"],
+    },
+}
+
+GENERATORS = {
+    "poromechanics_2d": _poromechanics_2d,
+    "shallow_water_2d": _shallow_water_2d,
+    "wind_engineering_2d": _wind_engineering_2d,
+    "dam_2d": _dam_2d,
+    "constitutive_laws_2d": _constitutive_laws_2d,
+    "thermal_dem_2d": _thermal_dem_2d,
+    "swimming_dem_2d": _swimming_dem_2d,
+    "dem_structures_2d": _dem_structures_2d,
+    "fem_to_dem_2d": _fem_to_dem_2d,
+    "cable_net_2d": _cable_net_2d,
+    "chimera_2d": _chimera_2d,
+    "droplet_dynamics_2d": _droplet_2d,
+    "free_surface_2d": _free_surface_2d,
+    "fluid_biomedical_2d": _fluid_biomedical_2d,
+    "fluid_hydraulics_2d": _fluid_hydraulics_2d,
+    "optimization_2d": _optimization_2d,
+}
