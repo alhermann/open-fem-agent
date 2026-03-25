@@ -12,7 +12,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
 | Tests | **80 passed** |
-| E2E stress tests | **16 completed** (15 pass + 1 partial) |
+| E2E stress tests | **17 completed** (16 pass + 1 partial) |
 
 ## Quick Start
 
@@ -152,11 +152,12 @@ These benchmarks have been run as end-to-end stress tests with a fresh AI agent.
 | 14 | `Simulate a heated steel beam in 4C (TSI one-way) and independently verify the thermal expansion using FEniCS. Compare displacements.` | 4C + FEniCS | PASS |
 | 15 | `Model electromagnetic wave scattering in NGSolve around an obstacle, then use the Joule heating field as a thermal load in a Kratos structural analysis.` | NGSolve + Kratos | PASS |
 
-### Advanced (1/1 partial)
+### Advanced (2/3 pass, 1 partial)
 
 | # | Prompt | Solver | Result |
 |---|--------|--------|--------|
 | 16 | `Run a poroelasticity consolidation problem in 4C (Terzaghi's problem) and verify against the analytical solution.` | 4C | PARTIAL (settlement 0.02% error, pore pressure formulation mismatch) |
+| 17 | `Simulate crack propagation in a double-cantilever beam using 4C peridynamics and compare the energy release rate against LEFM predictions.` | 4C | PASS (G_eff = G_Ic exact, CMOD 8.5% of LEFM) |
 
 ## Contributing
 
