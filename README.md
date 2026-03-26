@@ -12,7 +12,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
 | Tests | **97 passed** |
-| E2E stress tests | **24 completed** (23 pass + 1 partial) |
+| E2E stress tests | **24 completed** (24 pass) |
 
 ## Quick Start
 
@@ -152,11 +152,11 @@ These benchmarks have been run as end-to-end stress tests with a fresh AI agent.
 | 14 | `Simulate a heated steel beam in 4C (TSI one-way) and independently verify the thermal expansion using FEniCS. Compare displacements.` | 4C + FEniCS | PASS |
 | 15 | `Model electromagnetic wave scattering in NGSolve around an obstacle, then use the Joule heating field as a thermal load in a Kratos structural analysis.` | NGSolve + Kratos | PASS |
 
-### Advanced (6/7 pass, 1 partial)
+### Advanced (7/7 pass)
 
 | # | Prompt | Solver | Result |
 |---|--------|--------|--------|
-| 16 | `Run a poroelasticity consolidation problem in 4C (Terzaghi's problem) and verify against the analytical solution.` | 4C | PARTIAL (settlement 0.02% error, pore pressure formulation mismatch) |
+| 16 | `Run a poroelasticity consolidation problem in 4C (Terzaghi's problem) and verify against the analytical solution.` | 4C | PASS (re-run: settlement 0.1%, pressure < 0.4% error, agent derived correct BULKMODULUS→alpha mapping) |
 | 17 | `Simulate crack propagation in a double-cantilever beam using 4C peridynamics and compare the energy release rate against LEFM predictions.` | 4C | PASS (G_eff = G_Ic exact, CMOD 8.5% of LEFM) |
 | 18 | `Set up a fluid-beam interaction problem in 4C: flow around a slender elastic beam. Monitor the beam tip displacement over time.` | 4C | PASS (4.36mm tip deflection, monotonic growth) |
 | 19 | `Simulate gravity-driven packing of 500 spherical particles into a cylindrical container using Kratos DEM. Measure the final packing fraction and compare against the random close packing limit (~0.64).` | Kratos | PASS |
