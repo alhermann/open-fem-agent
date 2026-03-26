@@ -51,6 +51,24 @@ _TEMPLATE_SPECS: dict[str, tuple[str, str]] = {
     "hyperelasticity_3d":        (".hyperelasticity",      "_hyperelasticity_3d"),
     # parallel
     "parallel_poisson_2d":       (".parallel",             "_parallel_poisson_2d"),
+    # Navier-Stokes
+    "navier_stokes_2d":          (".navier_stokes",        "_navier_stokes_2d"),
+    # Advanced physics
+    "mixed_laplacian_2d":        (".advanced",             "_mixed_laplacian_2d"),
+    "compressible_euler_2d":     (".advanced",             "_compressible_euler_2d"),
+    "time_dependent_heat_2d":    (".advanced",             "_time_dependent_heat_2d"),
+    "time_dependent_wave_2d":    (".advanced",             "_time_dependent_wave_2d"),
+    "time_dependent_ns_2d":      (".advanced",             "_time_dependent_ns_2d"),
+    "matrix_free_2d":            (".advanced",             "_matrix_free_2d"),
+    "multigrid_2d":              (".advanced",             "_multigrid_2d"),
+    "multiphysics_dealii_2d":    (".advanced",             "_multiphysics_2d"),
+    "obstacle_problem_2d":       (".advanced",             "_obstacle_2d"),
+    "topology_opt_dealii_2d":    (".advanced",             "_topology_opt_2d"),
+    "error_estimation_2d":       (".advanced",             "_error_estimation_2d"),
+    "phase_field_2d":            (".advanced",             "_phase_field_2d"),
+    "dg_advection_reaction_2d":  (".advanced",             "_dg_advection_2d"),
+    "cg_dg_coupled_2d":          (".advanced",             "_cg_dg_coupled_2d"),
+    "optimal_control_2d":        (".advanced",             "_optimal_control_2d"),
 }
 
 # Maps physics name to (module_path, dict_name) for knowledge.
@@ -68,6 +86,22 @@ _KNOWLEDGE_SPECS: dict[str, tuple[str, str]] = {
     "dg_transport":         (".dg_transport",         "KNOWLEDGE"),
     "hyperelasticity":      (".hyperelasticity",      "KNOWLEDGE"),
     "parallel_poisson":     (".parallel",             "KNOWLEDGE"),
+    "navier_stokes":        (".navier_stokes",        "KNOWLEDGE"),
+    "mixed_laplacian":      (".advanced",             "KNOWLEDGE"),
+    "compressible_euler":   (".advanced",             "KNOWLEDGE"),
+    "time_dependent_heat":  (".advanced",             "KNOWLEDGE"),
+    "time_dependent_wave":  (".advanced",             "KNOWLEDGE"),
+    "time_dependent_ns":    (".advanced",             "KNOWLEDGE"),
+    "matrix_free":          (".advanced",             "KNOWLEDGE"),
+    "multigrid":            (".advanced",             "KNOWLEDGE"),
+    "multiphysics_dealii":  (".advanced",             "KNOWLEDGE"),
+    "obstacle_problem":     (".advanced",             "KNOWLEDGE"),
+    "topology_opt_dealii":  (".advanced",             "KNOWLEDGE"),
+    "error_estimation":     (".advanced",             "KNOWLEDGE"),
+    "phase_field":          (".advanced",             "KNOWLEDGE"),
+    "dg_advection_reaction": (".advanced",            "KNOWLEDGE"),
+    "cg_dg_coupled":        (".advanced",             "KNOWLEDGE"),
+    "optimal_control":      (".advanced",             "KNOWLEDGE"),
     "_general":             (".poisson",              "GENERAL_KNOWLEDGE"),
 }
 
