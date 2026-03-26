@@ -8,7 +8,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 |--------|-------|
 | FEM backends | **7 working** (FEniCSx, deal.II, 4C, NGSolve, scikit-fem, Kratos, DUNE-fem) |
 | MCP tools | **11** consolidated tools |
-| Physics types | **179** across all backends |
+| Physics types | **182** across all backends |
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
 | Tests | **97 passed** |
