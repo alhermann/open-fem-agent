@@ -112,6 +112,55 @@ class DuneBackend(SolverBackend):
                 element_types=["Lagrange-P1", "Lagrange-P2"],
                 template_variants=["2d"],
             ),
+            PhysicsCapability(
+                name="maxwell",
+                description="Maxwell equations: 2-D TE-mode scalar Helmholtz proxy (-Δu - k²u = f); full H(curl) via NGSolve",
+                spatial_dims=[2],
+                element_types=["Lagrange-P2"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="eigenvalue",
+                description="Eigenvalue problem -Δu = λu via shift-invert inverse iteration",
+                spatial_dims=[2],
+                element_types=["Lagrange-P1", "Lagrange-P2"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="hyperelasticity",
+                description="Neo-Hookean finite-strain hyperelasticity with automatic Newton via UFL",
+                spatial_dims=[2],
+                element_types=["Lagrange-P1-vec", "Lagrange-P2-vec"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="navier_stokes",
+                description="Incompressible Navier-Stokes via Picard iteration (lid-driven cavity)",
+                spatial_dims=[2],
+                element_types=["Lagrange-P2-vec + Lagrange-P1"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="helmholtz",
+                description="Helmholtz equation -Δu - k²u = f with MMS verification",
+                spatial_dims=[2],
+                element_types=["Lagrange-P2", "Lagrange-P3"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="time_dependent_heat",
+                description="Transient heat du/dt - alpha*Δu = f via implicit Euler time-stepping",
+                spatial_dims=[2],
+                element_types=["Lagrange-P1"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="mixed_methods",
+                description="Mixed Poisson with Raviart-Thomas RT0 flux and DG-P0 pressure (H(div) x L²)",
+                spatial_dims=[2],
+                element_types=["RT0 + DG-P0", "RT1 + DG-P1"],
+                template_variants=["2d"],
+            ),
         ]
 
     def get_knowledge(self, physics: str) -> dict:

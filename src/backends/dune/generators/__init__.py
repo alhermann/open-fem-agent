@@ -8,12 +8,14 @@ from .reaction_diffusion import GENERATORS as _rxn_gen, KNOWLEDGE as _rxn_kn
 from .nonlinear import GENERATORS as _nonlinear_gen, KNOWLEDGE as _nonlinear_kn
 from .dg_advection import GENERATORS as _dg_gen, KNOWLEDGE as _dg_kn
 from .adaptive_poisson import GENERATORS as _adaptive_gen, KNOWLEDGE as _adaptive_kn
+from .advanced import GENERATORS as _advanced_gen, KNOWLEDGE as _advanced_kn
 
 # Merged generator registry: physics_variant -> callable(params) -> str
 GENERATORS: dict[str, callable] = {}
 for _g in [
     _poisson_gen, _heat_gen, _elast_gen, _stokes_gen,
     _rxn_gen, _nonlinear_gen, _dg_gen, _adaptive_gen,
+    _advanced_gen,
 ]:
     GENERATORS.update(_g)
 
@@ -22,6 +24,7 @@ KNOWLEDGE: dict[str, dict] = {}
 for _k in [
     _poisson_kn, _heat_kn, _elast_kn, _stokes_kn,
     _rxn_kn, _nonlinear_kn, _dg_kn, _adaptive_kn,
+    _advanced_kn,
 ]:
     KNOWLEDGE.update(_k)
 

@@ -162,6 +162,55 @@ class NgsolveBackend(SolverBackend):
                 element_types=["VectorH1-P2"],
                 template_variants=["2d"],
             ),
+            PhysicsCapability(
+                name="dg_methods",
+                description="Interior-penalty DG (SIPG) for advection-diffusion using L2 dglagrange space",
+                spatial_dims=[2],
+                element_types=["L2-DG-Pk"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="contact",
+                description="Unilateral contact / obstacle problem via penalty method on elastic domain",
+                spatial_dims=[2],
+                element_types=["VectorH1-P2"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="time_dependent_ns",
+                description="Transient incompressible Navier-Stokes with IMEX splitting (full channel/cavity)",
+                spatial_dims=[2],
+                element_types=["VectorH1-P2 + H1-P1"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="mhd",
+                description="Magnetohydrodynamics: coupled NS + Maxwell, 2.5-D low-Rm Hartmann problem",
+                spatial_dims=[2],
+                element_types=["VectorH1-P2 + H1-P1", "H1-P2 (magnetic scalar)"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="hdivdiv",
+                description="HDivDiv Hellan-Herrmann-Johnson for Kirchhoff plate bending / biharmonic",
+                spatial_dims=[2],
+                element_types=["HDivDiv + H1"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="nonlinear_elasticity",
+                description="Large-deformation Neo-Hookean hyperelasticity with load stepping and Cauchy stress output",
+                spatial_dims=[2, 3],
+                element_types=["VectorH1-P2"],
+                template_variants=["2d", "3d"],
+            ),
+            PhysicsCapability(
+                name="phase_field",
+                description="Phase-field: Allen-Cahn (interface motion) and fracture (Bourdin staggered scheme)",
+                spatial_dims=[2],
+                element_types=["H1-Pk", "VectorH1 + H1 (fracture)"],
+                template_variants=["2d", "fracture_2d"],
+            ),
         ]
 
     def get_knowledge(self, physics: str) -> dict:

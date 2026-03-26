@@ -145,6 +145,55 @@ _PHYSICS_CAPABILITIES = [
         element_types=["triangle"],
         template_variants=["2d"],
     ),
+    PhysicsCapability(
+        name="dg_methods",
+        description="Discontinuous Galerkin for advection-dominated diffusion (upwind flux, interior penalty)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="contact",
+        description="Contact / obstacle problem via smooth penalty method (Newton iteration)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="multiphase",
+        description="Two-phase flow via Allen-Cahn phase-field (interface tracking, transient)",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="time_dependent_heat",
+        description="Transient heat equation with backward Euler, Robin convective BC, volumetric sources",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="cahn_hilliard",
+        description="Cahn-Hilliard phase separation: mixed (phi, mu) formulation, double-well potential",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="nonlinear_pde",
+        description="General nonlinear PDE with Newton solver and UFL automatic differentiation",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
+    PhysicsCapability(
+        name="magnetostatics",
+        description="Magnetostatics: 2D scalar Az curl-curl formulation, spatially varying permeability",
+        spatial_dims=[2],
+        element_types=["triangle"],
+        template_variants=["2d"],
+    ),
 ]
 
 

@@ -14,6 +14,7 @@ from .mixed_poisson import GENERATORS as _mixed_gen, KNOWLEDGE as _mixed_kn
 from .thermal_structural import GENERATORS as _therm_struct_gen, KNOWLEDGE as _therm_struct_kn
 from .surface_pde import GENERATORS as _surface_gen, KNOWLEDGE as _surface_kn
 from .plasticity import GENERATORS as _plasticity_gen, KNOWLEDGE as _plasticity_kn
+from .advanced import GENERATORS as _advanced_gen, KNOWLEDGE as _advanced_kn
 
 # Merged generator registry: physics_variant -> callable(params) -> str
 GENERATORS: dict[str, callable] = {}
@@ -21,7 +22,7 @@ for _g in [
     _poisson_gen, _elast_gen, _heat_gen, _stokes_gen, _ns_gen,
     _maxwell_gen, _helmholtz_gen, _hyper_gen, _eigen_gen,
     _convdiff_gen, _mixed_gen, _therm_struct_gen, _surface_gen,
-    _plasticity_gen,
+    _plasticity_gen, _advanced_gen,
 ]:
     GENERATORS.update(_g)
 
@@ -31,7 +32,7 @@ for _k in [
     _poisson_kn, _elast_kn, _heat_kn, _stokes_kn, _ns_kn,
     _maxwell_kn, _helmholtz_kn, _hyper_kn, _eigen_kn,
     _convdiff_kn, _mixed_kn, _therm_struct_kn, _surface_kn,
-    _plasticity_kn,
+    _plasticity_kn, _advanced_kn,
 ]:
     KNOWLEDGE.update(_k)
 

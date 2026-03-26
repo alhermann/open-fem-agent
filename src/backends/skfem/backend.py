@@ -127,6 +127,48 @@ class SkfemBackend(SolverBackend):
                 element_types=["Q1-quad"],
                 template_variants=["2d"],
             ),
+            PhysicsCapability(
+                name="navier_stokes",
+                description="Navier-Stokes flow with Newton iteration (Taylor-Hood P2/P1)",
+                spatial_dims=[2],
+                element_types=["P2-P1 Taylor-Hood"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="hyperelasticity",
+                description="Neo-Hookean hyperelasticity with Newton iteration (manual assembly)",
+                spatial_dims=[2],
+                element_types=["P1-tri-vec", "P2-tri-vec"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="dg_methods",
+                description="Discontinuous Galerkin for advection using ElementDG and InteriorFacetBasis",
+                spatial_dims=[2],
+                element_types=["DG-P1-tri", "DG-P2-tri"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="time_dependent",
+                description="General time-dependent PDE with theta-method (backward Euler / Crank-Nicolson)",
+                spatial_dims=[2],
+                element_types=["Q1-quad", "P1-tri"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="helmholtz",
+                description="Helmholtz equation -Δu - k²u = f with complex arithmetic and absorbing BC",
+                spatial_dims=[2],
+                element_types=["Q1-quad", "P1-tri"],
+                template_variants=["2d"],
+            ),
+            PhysicsCapability(
+                name="reaction_diffusion",
+                description="Reaction-diffusion system (Schnakenberg/Turing patterns) with Newton time-stepping",
+                spatial_dims=[2],
+                element_types=["Q1-quad"],
+                template_variants=["2d"],
+            ),
         ]
 
     def get_knowledge(self, physics: str) -> dict:

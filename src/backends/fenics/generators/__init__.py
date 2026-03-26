@@ -35,14 +35,61 @@ _PHYSICS_MODULES: dict[str, str] = {
     "biharmonic":           ".biharmonic",
     "mixed_poisson":        ".mixed_poisson",
     "reaction_diffusion":   ".reaction_diffusion",
+    # Advanced physics — all served by .advanced (multi-physics module)
+    "dg_methods":           ".advanced",
+    "contact":              ".advanced",
+    "multiphase":           ".advanced",
+    "time_dependent_heat":  ".advanced",
+    "cahn_hilliard":        ".advanced",
+    "nonlinear_pde":        ".advanced",
+    "magnetostatics":       ".advanced",
 }
 
-# Cache of imported modules.
+# Advanced physics names — these share a single module but need per-physics adapters.
+_ADVANCED_PHYSICS: frozenset[str] = frozenset({
+    "dg_methods",
+    "contact",
+    "multiphase",
+    "time_dependent_heat",
+    "cahn_hilliard",
+    "nonlinear_pde",
+    "magnetostatics",
+})
+
+# Cache of imported modules (or adapter objects for advanced physics).
 _MODULE_CACHE: dict[str, Any] = {}
 
 
+class _AdvancedPhysicsAdapter:
+    """Thin adapter that makes a single physics entry from advanced.py look like
+    a standalone module with ``generate(variant, params)``, ``KNOWLEDGE``, and
+    ``VARIANTS`` attributes — matching the interface expected by the rest of
+    this package.
+    """
+
+    def __init__(self, physics: str, advanced_mod: Any) -> None:
+        self._physics = physics
+        self._mod = advanced_mod
+
+    @property
+    def KNOWLEDGE(self) -> dict:  # noqa: N802
+        return self._mod.KNOWLEDGE.get(self._physics, {})
+
+    @property
+    def VARIANTS(self) -> list[str]:  # noqa: N802
+        return sorted(self._mod.GENERATORS.get(self._physics, {}).keys())
+
+    def generate(self, variant: str, params: dict) -> str:
+        return self._mod.generate(self._physics, variant, params)
+
+
 def _load_module(physics: str) -> Any:
-    """Lazily import a generator module by physics name."""
+    """Lazily import a generator module by physics name.
+
+    For physics served by the multi-physics ``advanced`` module, returns a
+    per-physics :class:`_AdvancedPhysicsAdapter` that presents the standard
+    ``generate(variant, params)`` / ``KNOWLEDGE`` / ``VARIANTS`` interface.
+    """
     if physics in _MODULE_CACHE:
         return _MODULE_CACHE[physics]
 
@@ -54,15 +101,22 @@ def _load_module(physics: str) -> Any:
         )
 
     try:
-        mod = importlib.import_module(module_path, package=__name__)
+        raw_mod = importlib.import_module(module_path, package=__name__)
     except ImportError as exc:
         raise ImportError(
             f"Cannot import FEniCS generator module {module_path} "
             f"for physics {physics!r}: {exc}"
         ) from exc
 
-    _MODULE_CACHE[physics] = mod
-    return mod
+    if physics in _ADVANCED_PHYSICS:
+        # Wrap in a per-physics adapter so the rest of the package sees the
+        # standard single-physics interface.
+        adapter = _AdvancedPhysicsAdapter(physics, raw_mod)
+        _MODULE_CACHE[physics] = adapter
+        return adapter
+
+    _MODULE_CACHE[physics] = raw_mod
+    return raw_mod
 
 
 def get_generator(physics: str, variant: str) -> Callable[[dict], str]:
