@@ -141,11 +141,18 @@ def register_example_tools(mcp: FastMCP):
                 keyword_lower = module.lower()
                 # Normalize spaces/underscores/hyphens for fuzzy matching
                 keyword_normalized = keyword_lower.replace(" ", "_").replace("-", "_")
+                # Split into individual words for OR matching
+                # "eigenvalue maxwell" matches physics containing "eigenvalue" OR "maxwell"
+                keywords = [w.replace("-", "_") for w in keyword_lower.split()]
                 for p in backend.supported_physics():
                     name_norm = p.name.lower().replace("-", "_")
                     desc_norm = p.description.lower()
-                    if (keyword_lower in name_norm or keyword_normalized in name_norm
-                            or keyword_lower in desc_norm or keyword_normalized in desc_norm):
+                    match = (keyword_lower in name_norm or keyword_normalized in name_norm
+                             or keyword_lower in desc_norm or keyword_normalized in desc_norm)
+                    if not match and len(keywords) > 1:
+                        # OR matching: any individual keyword matches
+                        match = any(kw in name_norm or kw in desc_norm for kw in keywords)
+                    if match:
                         for v in p.template_variants[:max_results]:
                             try:
                                 content = backend.generate_input(p.name, v, {})

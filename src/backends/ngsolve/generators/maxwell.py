@@ -55,11 +55,20 @@ KNOWLEDGE = {
         "spaces": "HCurl(mesh, order=k, nograds=True) — tangential continuity",
         "solver": "Direct for small. HCurlAMG preconditioner for large systems",
         "pitfalls": [
-            "MUST use nograds=True to remove gradient kernel (otherwise singular)",
-            "Add regularization: 1e-8*u*v*dx to make system invertible",
+            "For SOURCE problems (magnetostatics): use nograds=True to remove "
+            "gradient kernel, plus 1e-8*u*v*dx regularization.",
+            "For EIGENVALUE problems: do NOT use nograds=True — it degrades accuracy "
+            "by 1-3% and causes eigenvalues to converge from below. Instead, use the "
+            "full HCurl space with ArnoldiSolver(shift=<near expected eigenvalue>). "
+            "Set shift near the center of the expected eigenvalue range.",
             "B = curl(A) — magnetic field is the curl of the vector potential",
             "Complex-valued for time-harmonic: HCurl(mesh, complex=True)",
             "3D only — 2D Maxwell reduces to scalar Helmholtz",
+            "ArnoldiSolver shift: set near expected eigenvalue range, not near zero. "
+            "Estimate lowest eigenvalue analytically first (e.g., k^2 ~ (pi/L)^2 "
+            "for cavity). shift=0.5*k^2_expected works well.",
+            "Eigenvalue solvers return complex values even for real-symmetric problems — "
+            "take .real before comparison.",
         ],
     },
 }
