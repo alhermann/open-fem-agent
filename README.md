@@ -12,7 +12,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
 | Tests | **97 passed** |
-| E2E stress tests | **23 completed** (22 pass + 1 partial) |
+| E2E stress tests | **24 completed** (23 pass + 1 partial) |
 
 ## Quick Start
 
@@ -169,6 +169,7 @@ These benchmarks have been run as end-to-end stress tests with a fresh AI agent.
 |---|--------|---------------|--------|
 | 22 | `Solve the heat equation on a unit square with T=1 on the left, T=0 on the right, and zero-flux top/bottom. Pick the best solver and verify against the analytical solution.` | FEniCS (auto-selected) | PASS (L2 error = 7e-15, machine precision) |
 | 23 | `Simulate two elastic blocks being pressed together with contact. Use whichever solver is most appropriate.` | 4C (auto-selected) | PASS (mortar penalty contact, 10 load steps, stress concentration 1.66x) |
+| 24 | `Set up a simple fluid-structure interaction problem in Kratos using the CoSimulation application: flow in a channel with a flexible wall segment. Monitor the wall deflection.` | Kratos | PASS (14 Aitken iterations, 13.99mm deflection, 1.3% vs beam theory) |
 
 ## Contributing
 
