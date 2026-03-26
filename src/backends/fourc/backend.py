@@ -194,6 +194,12 @@ class FourcBackend(SolverBackend):
                               ["Generic"], ["constraint_3d"]),
             PhysicsCapability("brownian_dynamics", "Brownian dynamics of fiber/biopolymer networks", [3],
                               ["BEAM3R LINE2"], ["brownian_3d"]),
+            PhysicsCapability("cardiovascular0d", "0-D cardiovascular: windkessel, closed-loop circulation, heart models", [3],
+                              ["coupled to 3D fluid/structure"], ["windkessel_3d"]),
+            PhysicsCapability("reduced_lung", "Reduced lung model: 1D airways + 0D alveoli + optional 3D parenchyma", [1, 3],
+                              ["REDAIRWAY LINE2 + 0D acini"], ["lung_1d"]),
+            PhysicsCapability("fluid_turbulence", "Fluid turbulence: LES (Smagorinsky, dynamic, WALE) and DNS", [2, 3],
+                              ["FLUID QUAD4", "FLUID HEX8"], ["les_channel_3d"]),
         ]
 
     def get_knowledge(self, physics: str) -> dict:

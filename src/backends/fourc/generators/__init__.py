@@ -68,6 +68,9 @@ _GENERATOR_SPECS: dict[str, tuple[str, str]] = {
     "mixture":             (".mixture",               "MixtureGenerator"),
     "constraint":          (".constraint",            "ConstraintGenerator"),
     "brownian_dynamics":   (".brownian_dynamics",     "BrownianDynamicsGenerator"),
+    "cardiovascular0d":    (".cardiovascular0d",      "Cardiovascular0DGenerator"),
+    "reduced_lung":        (".reduced_lung",           "ReducedLungGenerator"),
+    "fluid_turbulence":    (".fluid_turbulence",       "FluidTurbulenceGenerator"),
 }
 
 # Aliases map user-friendly names to the canonical module key.
@@ -251,6 +254,21 @@ _ALIASES: dict[str, str] = {
     "fiber_network":                     "brownian_dynamics",
     "biopolymer":                        "brownian_dynamics",
     "actin":                             "brownian_dynamics",
+    # Cardiovascular0D aliases
+    "windkessel":                        "cardiovascular0d",
+    "cardiovascular":                    "cardiovascular0d",
+    "lumped_circulation":                "cardiovascular0d",
+    "heart_model":                       "cardiovascular0d",
+    # Reduced lung aliases
+    "lung_model":                        "reduced_lung",
+    "ventilation":                       "reduced_lung",
+    "lung_ventilation":                  "reduced_lung",
+    # Fluid turbulence aliases
+    "les":                               "fluid_turbulence",
+    "dns":                               "fluid_turbulence",
+    "turbulence":                        "fluid_turbulence",
+    "smagorinsky":                       "fluid_turbulence",
+    "large_eddy":                        "fluid_turbulence",
 }
 
 # Cache of instantiated generators (populated lazily).

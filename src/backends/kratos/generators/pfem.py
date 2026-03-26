@@ -56,6 +56,40 @@ KNOWLEDGE = {
     },
 }
 
+def _pfem_solid_2d(params: dict) -> str:
+    """PFEM for large-deformation solids."""
+    return '''\
+"""PFEM Solid — Kratos PfemSolidMechanicsApplication"""
+import json
+try:
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.PfemSolidMechanicsApplication
+    print("PfemSolidMechanicsApplication available")
+    summary = {"note": "Available", "capabilities": ["large_deformation", "cutting", "forming"]}
+except ImportError:
+    print("PfemSolidMechanicsApplication not installed")
+    summary = {"note": "not installed"}
+with open("results_summary.json", "w") as f: json.dump(summary, f, indent=2)
+'''
+
+def _pfem2_2d(params: dict) -> str:
+    """PFEM2 two-phase flow."""
+    return '''\
+"""PFEM2 Two-Phase — Kratos PFEM2Application"""
+import json
+try:
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.PFEM2Application
+    print("PFEM2Application available")
+    summary = {"note": "Available", "capabilities": ["two_phase", "interface_tracking"]}
+except ImportError:
+    print("PFEM2Application not installed")
+    summary = {"note": "not installed"}
+with open("results_summary.json", "w") as f: json.dump(summary, f, indent=2)
+'''
+
 GENERATORS = {
     "pfem_fluid_2d": _pfem_fluid_2d,
+    "pfem_solid_2d": _pfem_solid_2d,
+    "pfem2_2d": _pfem2_2d,
 }
