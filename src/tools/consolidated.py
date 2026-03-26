@@ -656,6 +656,7 @@ def register_consolidated_tools(mcp: FastMCP):
         vtu_files += sorted(wd.rglob("*.vtk"))
         vtu_files += sorted(wd.rglob("*.vtp"))
         vtu_files += sorted(wd.rglob("*.xdmf"))
+        vtu_files += sorted(wd.rglob("*.bp"))  # ADIOS2/VTX output from dolfinx 0.10+
 
         if action == "list":
             return "\n".join(f"- {f.relative_to(wd)}" for f in vtu_files) or "No VTU/VTP files found"

@@ -12,7 +12,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
 | Tests | **97 passed** |
-| E2E stress tests | **21 completed** (20 pass + 1 partial) |
+| E2E stress tests | **22 completed** (21 pass + 1 partial) |
 
 ## Quick Start
 
@@ -162,6 +162,12 @@ These benchmarks have been run as end-to-end stress tests with a fresh AI agent.
 | 19 | `Simulate gravity-driven packing of 500 spherical particles into a cylindrical container using Kratos DEM. Measure the final packing fraction and compare against the random close packing limit (~0.64).` | Kratos | PASS |
 | 20 | `Compute the first 6 electromagnetic resonant frequencies of a 3D rectangular cavity using NGSolve Nédélec elements. Compare against the analytical TM/TE mode frequencies.` | NGSolve | PASS (all 6 modes match to <10⁻⁶ relative error) |
 | 21 | `Generate a 3D thick-walled cylinder mesh with Gmsh, then solve internal pressure loading with Neo-Hookean material in FEniCS. Compare the radial displacement against the analytical Lamé solution at small strain.` | FEniCS | PASS (0.42% L2 error vs Lamé, P2 curved elements) |
+
+### Solver Selection & Agent Intelligence (1/1 pass)
+
+| # | Prompt | Solver Chosen | Result |
+|---|--------|---------------|--------|
+| 22 | `Solve the heat equation on a unit square with T=1 on the left, T=0 on the right, and zero-flux top/bottom. Pick the best solver and verify against the analytical solution.` | FEniCS (auto-selected) | PASS (L2 error = 7e-15, machine precision) |
 
 ## Contributing
 
