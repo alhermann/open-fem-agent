@@ -61,6 +61,13 @@ _GENERATOR_SPECS: dict[str, tuple[str, str]] = {
     "reduced_airways":     (".reduced_airways",       "ReducedAirwaysGenerator"),
     "beam_interaction":    (".beam_interaction",      "BeamInteractionGenerator"),
     "multiscale":          (".multiscale",            "MultiscaleGenerator"),
+    # New generators
+    "membrane":            (".membrane",              "MembraneGenerator"),
+    "shell":               (".shell",                 "ShellGenerator"),
+    "thermo":              (".thermo",                "ThermoGenerator"),
+    "mixture":             (".mixture",               "MixtureGenerator"),
+    "constraint":          (".constraint",            "ConstraintGenerator"),
+    "brownian_dynamics":   (".brownian_dynamics",     "BrownianDynamicsGenerator"),
 }
 
 # Aliases map user-friendly names to the canonical module key.
@@ -216,6 +223,34 @@ _ALIASES: dict[str, str] = {
     "computational_homogenization":      "multiscale",
     "rve":                               "multiscale",
     "stru_multi":                        "multiscale",
+    # Membrane aliases
+    "inflatable":                        "membrane",
+    "fabric":                            "membrane",
+    "membrane_structure":                "membrane",
+    # Shell aliases
+    "plate":                             "shell",
+    "thin_shell":                        "shell",
+    "kirchhoff_love":                    "shell",
+    "reissner_mindlin":                  "shell",
+    # Thermo aliases (standalone, not TSI)
+    "heat_standalone":                   "thermo",
+    "thermal":                           "thermo",
+    "heat_conduction_standalone":        "thermo",
+    # Mixture aliases
+    "composite":                         "mixture",
+    "fiber_reinforced":                  "mixture",
+    "biological_tissue":                 "mixture",
+    "growth_remodeling":                 "mixture",
+    # Constraint aliases
+    "mpc":                               "constraint",
+    "rigid_body":                        "constraint",
+    "periodic_bc":                       "constraint",
+    "coupling_condition":                "constraint",
+    # Brownian dynamics aliases
+    "brownian":                          "brownian_dynamics",
+    "fiber_network":                     "brownian_dynamics",
+    "biopolymer":                        "brownian_dynamics",
+    "actin":                             "brownian_dynamics",
 }
 
 # Cache of instantiated generators (populated lazily).

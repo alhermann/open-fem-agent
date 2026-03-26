@@ -181,6 +181,19 @@ class FourcBackend(SolverBackend):
             PhysicsCapability("porous_media", "Poroelasticity (Biot/mixture theory, consolidation)", [2, 3],
                               ["WALLQ4PORO", "WALLQ9PORO", "SOLIDH8PORO", "SOLIDT4PORO"],
                               ["terzaghi_2d", "consolidation_3d"]),
+            # New physics
+            PhysicsCapability("membrane", "Membrane elements (inflatable, fabric, tissue)", [2, 3],
+                              ["MEMBRANE TRI3", "MEMBRANE QUAD4"], ["membrane_2d"]),
+            PhysicsCapability("shell", "Shell elements (Kirchhoff-Love, Reissner-Mindlin)", [3],
+                              ["SHELL REISSNER QUAD4", "SHELL KIRCHHOFF TRI3", "SOLIDSHELL HEX8"], ["shell_3d"]),
+            PhysicsCapability("thermo", "Pure thermal analysis (standalone heat conduction)", [2, 3],
+                              ["THERMO QUAD4", "THERMO HEX8"], ["thermo_2d", "thermo_3d"]),
+            PhysicsCapability("mixture", "Mixture/composite materials (fiber-reinforced, biological)", [3],
+                              ["SOLID HEX8 with MAT_Mixture"], ["mixture_3d"]),
+            PhysicsCapability("constraint", "Constraints: MPC, rigid body, periodic BCs, mortar coupling", [2, 3],
+                              ["Generic"], ["constraint_3d"]),
+            PhysicsCapability("brownian_dynamics", "Brownian dynamics of fiber/biopolymer networks", [3],
+                              ["BEAM3R LINE2"], ["brownian_3d"]),
         ]
 
     def get_knowledge(self, physics: str) -> dict:
