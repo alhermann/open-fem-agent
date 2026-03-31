@@ -189,5 +189,78 @@ class TestDealiiFullCoverage(unittest.TestCase):
                          f"deal.II missing physics: {missing}")
 
 
+class TestSolverFreshness(unittest.TestCase):
+    """Check that solver sources and pip packages are reasonably up to date."""
+
+    def test_source_repos_exist(self):
+        """Source root env vars point to valid directories if set."""
+        env_vars = {
+            "FOURC_ROOT": "4C",
+            "KRATOS_ROOT": "Kratos",
+            "DEALII_ROOT": "deal.II",
+        }
+        for var, name in env_vars.items():
+            root = os.environ.get(var, "")
+            if root:
+                self.assertTrue(
+                    os.path.isdir(root),
+                    f"{var}={root} is set but directory does not exist"
+                )
+
+    def test_source_repos_not_stale(self):
+        """Source repos should have commits less than 30 days old."""
+        import subprocess
+        import time
+        env_vars = ["FOURC_ROOT", "KRATOS_ROOT", "DEALII_ROOT"]
+        for var in env_vars:
+            root = os.environ.get(var, "")
+            if not root or not os.path.isdir(root):
+                continue
+            try:
+                result = subprocess.run(
+                    ["git", "log", "-1", "--format=%ct"],
+                    capture_output=True, text=True, cwd=root, timeout=5
+                )
+                if result.returncode == 0:
+                    last_commit = int(result.stdout.strip())
+                    days_old = (time.time() - last_commit) / 86400
+                    self.assertLess(
+                        days_old, 30,
+                        f"{var} last commit is {days_old:.0f} days old. "
+                        f"Consider: cd {root} && git pull"
+                    )
+            except Exception:
+                pass  # Skip if git not available
+
+    def test_pip_solvers_installed(self):
+        """Key pip-installed solvers should be importable."""
+        solvers = {
+            "ngsolve": "NGSolve",
+            "skfem": "scikit-fem",
+            "KratosMultiphysics": "Kratos",
+        }
+        installed = []
+        for module, name in solvers.items():
+            try:
+                __import__(module)
+                installed.append(name)
+            except ImportError:
+                pass
+        # At least 2 pip solvers should be installed
+        self.assertGreaterEqual(
+            len(installed), 2,
+            f"Only {len(installed)} pip solvers installed: {installed}"
+        )
+
+    def test_check_script_exists(self):
+        """The freshness check script should exist and be executable."""
+        script = Path(__file__).parent.parent / "check_solver_updates.sh"
+        self.assertTrue(script.exists(), "check_solver_updates.sh not found")
+        self.assertTrue(
+            os.access(str(script), os.X_OK),
+            "check_solver_updates.sh is not executable"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
