@@ -13,6 +13,17 @@ KNOWLEDGE = {
         "Vector function space: ('Lagrange', 1, (gdim,))",
         "Dirichlet BC needs np.zeros(gdim) not scalar 0",
         "Plane strain vs plane stress: adjust lambda accordingly",
+        "XDMFFile cannot write functions on P2 (order 2) meshes. Use VTKFile "
+        "instead, or interpolate to a P1 function before writing to XDMF.",
+        "For imported CAD geometry (IGES/STEP): use gmsh.model.getEntities() "
+        "and getBoundingBox() to identify surface tags for physical group "
+        "assignment. There is no automatic surface-to-BC mapping.",
+        "Coordinate-dependent surface tractions (e.g., torsion loads) require "
+        "computing the scaling factor from a surface integral: "
+        "q = M / integral(|r| ds) where r is position relative to the axis.",
+        "Mesh element order (gmsh Tet10) and FE polynomial degree (P2) are "
+        "independent. A P2 space on a Tet10 mesh gives isoparametric elements. "
+        "A P1 space on a Tet10 mesh uses curved geometry but linear interpolation.",
     ],
     "materials": {
         "E": {"range": [1.0, 1e12], "unit": "Pa"},
