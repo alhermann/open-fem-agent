@@ -11,7 +11,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Physics types | **182** across all backends |
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
-| Tests | **97 passed** |
+| Tests | **101 passed** |
 | E2E stress tests | **24 completed** (24 pass) |
 
 ## Quick Start
