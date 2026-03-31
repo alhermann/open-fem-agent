@@ -10,6 +10,9 @@ build/
 # Virtual environment
 .venv/
 
+# Documents
+papers/
+
 # Generated outputs (created by tools at runtime)
 simulation_outputs/
 benchmarks/results/
