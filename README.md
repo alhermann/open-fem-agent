@@ -41,27 +41,84 @@ sudo apt install libdeal.ii-dev   # Ubuntu/Debian
 # 4C Multiphysics (build from source — see 4C documentation)
 ```
 
-### 3. Configure the MCP server
+### 3. Connect to your AI tool
 
-Copy the example settings and fill in your paths:
+The MCP server runs as a stdio process. Each AI tool has its own way to register it.
+
+**Claude Code** (recommended — supports sub-agent spawning for critic workflow):
 
 ```bash
-cp .claude/settings.json.example .claude/settings.json
-# Edit .claude/settings.json — set paths for your installed solvers
+# From the project root:
+claude mcp add open-fem-agent \
+  .venv/bin/python -- -m server \
+  -e PYTHONPATH=src \
+  -e PYVISTA_OFF_SCREEN=true
 ```
 
-For **Claude Code**, the settings are auto-loaded from `.claude/settings.json`.
-For **Cursor**, **Windsurf**, or **Copilot**, configure the MCP server in your tool's settings pointing to `.venv/bin/python -m server` in the `src/` directory.
+Or manually create `.claude/settings.json` in the project directory:
+
+```json
+{
+  "mcpServers": {
+    "open-fem-agent": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["-m", "server"],
+      "cwd": "src",
+      "env": {
+        "PYTHONPATH": "src",
+        "PYVISTA_OFF_SCREEN": "true"
+      }
+    }
+  }
+}
+```
+
+**Cursor**:
+
+Go to Settings > MCP Servers > Add Server, then enter:
+- Name: `open-fem-agent`
+- Command: `/path/to/open-fem-agent/.venv/bin/python`
+- Args: `-m server`
+- Working directory: `/path/to/open-fem-agent/src`
+- Environment: `PYTHONPATH=src`, `PYVISTA_OFF_SCREEN=true`
+
+**Windsurf**:
+
+Add to your Windsurf MCP configuration (Settings > MCP):
+```json
+{
+  "open-fem-agent": {
+    "command": "/path/to/open-fem-agent/.venv/bin/python",
+    "args": ["-m", "server"],
+    "cwd": "/path/to/open-fem-agent/src",
+    "env": { "PYTHONPATH": "src", "PYVISTA_OFF_SCREEN": "true" }
+  }
+}
+```
+
+**OpenAI Codex / any MCP client**:
+
+The server speaks standard MCP over stdio. Point your client at:
+```
+command: .venv/bin/python -m server
+cwd: src/
+env: PYTHONPATH=src
+```
 
 ### 4. Verify
 
 ```bash
 source .venv/bin/activate
-cd src && python -m server  # should start without errors
+cd src && python -m server  # should start without errors (Ctrl+C to stop)
 
 # Run tests
 cd .. && pytest tests/ -v
 ```
+
+### 5. Optional: configure solver source access
+
+To enable developer mode (source browsing, modification, rebuild), add solver paths to your MCP environment. See `.claude/settings.json.example` for the template.
 
 ## Environment Variables
 
