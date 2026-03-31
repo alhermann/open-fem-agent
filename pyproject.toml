@@ -5,7 +5,7 @@ description = "Open-source MCP server connecting LLMs to 8 FEM codes for AI-driv
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Alexander", email = ""},
+    {name = "Open FEM Agent Contributors"},
 ]
 keywords = ["fem", "mcp", "simulation", "multiphysics", "coupling", "ai-agent"]
 classifiers = [

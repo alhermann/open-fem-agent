@@ -21,7 +21,7 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 ```bash
 git clone <repo-url> && cd open-fem-agent
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 2. Install solver backends (pick what you need)

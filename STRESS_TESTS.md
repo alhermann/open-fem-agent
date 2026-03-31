@@ -146,7 +146,7 @@ Set up a simple fluid-structure interaction problem in Kratos using the CoSimula
 
 ## How to Use These Tests
 
-1. Run each prompt in a **fresh interactive Claude terminal** (`cd /home/alexander/Schreibtisch/open-fem-agent && claude`)
+1. Run each prompt in a **fresh interactive Claude terminal** (`cd /path/to/open-fem-agent && claude`)
 2. Let the agent work through the sub-agent workflow (research → setup → critic → execution)
 3. Note what works and what fails
 4. After the test completes, ask the agent these debrief questions:
