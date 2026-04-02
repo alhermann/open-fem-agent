@@ -216,8 +216,48 @@ KNOWLEDGE = {
                 "description": "Triaxial with confining pressure sigma_3",
                 "analytical_yield": "sigma_1 = sigma_3*(1+sin(phi))/(1-sin(phi)) + 2*c*cos(phi)/(1-sin(phi))",
                 "example_params": "sigma_3=100 kPa, c=50 kPa, phi=30 deg → sigma_1 = 473.2 kPa, q = 373.2 kPa",
+                "elastic_offset": (
+                    "With confining pressure, the deviatoric stress at zero axial strain is NOT zero. "
+                    "q = E*eps_a - sigma_3*(1-2*nu). For sigma_3=100 kPa, nu=0.3: q_offset = -40 kPa. "
+                    "The elastic line in a q-eps plot starts at -40 kPa, not at the origin."
+                ),
+                "boundary_conditions": (
+                    "Use Neumann (pressure) BCs for confining on lateral faces + Dirichlet (displacement) "
+                    "for axial compression on the top face. Do NOT use fully displacement-controlled BCs "
+                    "for all faces — this bypasses global equilibrium iteration and the material tangent "
+                    "is never tested, hiding convergence issues in the constitutive law."
+                ),
                 "reference": "DIANA FEA Mohr-Coulomb Model Verification; validated against PLAXIS",
             },
+        },
+        "return_mapping": {
+            "description": (
+                "MC return mapping formulas for solver developers. "
+                "MC with Lode-angle smoothing admits a single-step closed-form cone return, "
+                "analogous to Drucker-Prager (de Souza Neto Ch. 8-9)."
+            ),
+            "lode_angle_factor": (
+                "K(theta, angle) = cos(theta) - sin(theta)*sin(angle)/sqrt(3), "
+                "where theta is the Lode angle (clamped to +/-29 deg for smoothing). "
+                "K_phi uses the friction angle, K_psi uses the dilatancy angle."
+            ),
+            "yield_function": "F = K_phi * sqrt(J2) + sin(phi) * p - cos(phi) * c",
+            "cone_return": (
+                "Dgamma = F_trial / (K_phi * K_psi * G + kappa * sin(phi) * sin(psi) + cos(phi)^2 * H). "
+                "Stress update: devstress *= (1 - K_psi*G*Dgamma/sqrt(J2_trial)), "
+                "p = p_trial - kappa*sin(psi)*Dgamma, "
+                "strainbar_p += cos(phi)*Dgamma."
+            ),
+            "apex_return": (
+                "When sqrt(J2) - K_psi*G*Dgamma < 0, return to apex: devstress = 0, "
+                "dstrainv = (sin(phi)*p_trial - cos(phi)*c) / (kappa*sin(phi) + cos^2(phi)/sin(phi)*H)."
+            ),
+            "lode_smoothing_error": (
+                "Clamping the Lode angle at +/-29 deg introduces ~3% error at the compression/extension "
+                "meridians (exact theta = +/-30 deg). This is inherent to the smoothing approach and "
+                "acceptable for engineering use. For exact MC, use a principal-stress-space return mapping "
+                "(Sloan et al., IJNME 2001)."
+            ),
         },
         "pitfalls": [
             "CRITICAL: Dilatancy angle psi=0 causes singular plastic denominator (dF:C:dG = 0) "
@@ -239,6 +279,15 @@ KNOWLEDGE = {
             "SHEAR LOCKING: Linear hex8 (3D8N) elements lock in bending-dominated problems. "
             "For plasticity benchmarks with uniform stress (uniaxial, triaxial), hex8 is fine. "
             "For problems with stress gradients, use quadratic elements (3D20N, 3D27N).",
+            "TESTING PITFALL: Fully displacement-controlled single-element tests (all DOFs prescribed) "
+            "can appear to work but the material tangent is never exercised because the global Newton "
+            "converges in 1 iteration regardless. Always use at least one Neumann-loaded face "
+            "(e.g., confining pressure in triaxial) so the equilibrium iteration actually tests the "
+            "elastoplastic tangent. Without this, tangent bugs are hidden.",
+            "TRIAXIAL ELASTIC OFFSET: With confining pressure sigma_3, the deviatoric stress at zero "
+            "axial strain is q = -sigma_3*(1-2*nu), NOT zero. For sigma_3=100 kPa, nu=0.3: q_0 = -40 kPa. "
+            "If your stress-strain plot shows the curve starting below the expected elastic line, "
+            "this Poisson coupling offset is the reason — the solver is correct.",
         ],
         "elements": [
             "SmallDisplacementElement3D8N (linear hex, small strain)",

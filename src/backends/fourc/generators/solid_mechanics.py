@@ -186,7 +186,15 @@ class SolidMechanicsGenerator(BaseGenerator):
                     "description": "Small-strain Drucker-Prager (pressure-dependent, smooth cone)",
                     "parameters": "YOUNG, NUE, DENS, ISOHARD, TOL, C (cohesion), ETA, XI, ETABAR, TANG, MAXITER",
                     "kinematics": "linear only",
-                    "notes": "ETA/XI/ETABAR are derived from friction/dilatancy angles; see de Souza Neto et al.",
+                    "eta_xi_formulas": (
+                        "For outer cone (circumscribed, matches MC at compression meridian): "
+                        "ETA = 6*sin(phi)/(3-sin(phi)), XI = 6*cos(phi)/(3-sin(phi)), "
+                        "ETABAR = 6*sin(psi)/(3-sin(psi)). "
+                        "For inner cone (inscribed, matches MC at extension meridian): "
+                        "ETA = 6*sin(phi)/(3+sin(phi)), XI = 6*cos(phi)/(3+sin(phi)). "
+                        "For middle cone (Lode-angle independent best fit): "
+                        "ETA = 3*tan(phi)/sqrt(9+12*tan^2(phi)), XI = 3/sqrt(9+12*tan^2(phi))."
+                    ),
                 },
                 "MAT_PlasticElastHyper": {
                     "description": "Finite-strain J2/Hill with nonlinear isotropic+kinematic hardening, viscoplasticity",
@@ -215,6 +223,17 @@ class SolidMechanicsGenerator(BaseGenerator):
                 "Too few steps causes the Newton iteration to diverge when crossing the yield surface.",
                 "Accumulated plastic strain output is available via 'accumulated_plastic_strain' "
                 "in IO/RUNTIME VTK OUTPUT/STRUCTURE with STRESS_STRAIN: true.",
+                "TANG parameter controls the material tangent: 'consistent' uses the algorithmic "
+                "elastoplastic tangent (required for global Newton convergence in load-controlled problems). "
+                "'elastic' uses the elastic tangent as a fallback (poor convergence near yield, but robust "
+                "for debugging). Always use 'consistent' for production plasticity simulations.",
+                "TESTING PITFALL: Fully displacement-controlled single-element tests (all DOFs prescribed "
+                "via Dirichlet BCs) bypass the global Newton iteration — the return mapping is called but "
+                "its tangent is irrelevant. For benchmarking plasticity, use Neumann BCs on at least one "
+                "face (e.g., confining pressure) so the tangent is actually exercised.",
+                "NEUMANN SIGN CONVENTION for structural problems: negative values in the normal direction "
+                "produce compressive traction. For a face with outward normal in +x, setting "
+                "VAL: [-100e3, 0, 0, 0, 0, 0] applies 100 kPa compression on that face.",
             ],
             "pitfalls": [
                 (
