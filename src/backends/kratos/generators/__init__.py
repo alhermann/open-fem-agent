@@ -19,6 +19,7 @@ from .pfem import GENERATORS as _pfem_gen, KNOWLEDGE as _pfem_kn
 from .rom import GENERATORS as _rom_gen, KNOWLEDGE as _rom_kn
 from .topology_optimization import GENERATORS as _topo_gen, KNOWLEDGE as _topo_kn
 from .iga import GENERATORS as _iga_gen, KNOWLEDGE as _iga_kn
+from .plasticity import GENERATORS as _plast_gen, KNOWLEDGE as _plast_kn
 from .specialized import GENERATORS as _spec_gen, KNOWLEDGE as _spec_kn
 
 # Merged generator registry: physics_variant -> callable(params) -> str
@@ -28,7 +29,7 @@ for _g in [
     _contact_gen, _fsi_gen, _dyn_gen, _dem_gen,
     _mpm_gen, _shape_gen, _cosim_gen,
     _geo_gen, _comp_gen, _rans_gen, _pfem_gen,
-    _rom_gen, _topo_gen, _iga_gen, _spec_gen,
+    _rom_gen, _topo_gen, _iga_gen, _plast_gen, _spec_gen,
 ]:
     GENERATORS.update(_g)
 
@@ -39,7 +40,7 @@ for _k in [
     _contact_kn, _fsi_kn, _dyn_kn, _dem_kn,
     _mpm_kn, _shape_kn, _cosim_kn,
     _geo_kn, _comp_kn, _rans_kn, _pfem_kn,
-    _rom_kn, _topo_kn, _iga_kn, _spec_kn,
+    _rom_kn, _topo_kn, _iga_kn, _plast_kn, _spec_kn,
 ]:
     KNOWLEDGE.update(_k)
 

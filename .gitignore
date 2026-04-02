@@ -13,6 +13,9 @@ build/
 # Documents
 papers/
 
+# Solver source checkouts
+solvers/
+
 # Generated outputs (created by tools at runtime)
 simulation_outputs/
 benchmarks/results/

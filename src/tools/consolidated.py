@@ -94,6 +94,11 @@ def _fuzzy_match_physics(backend, query: str) -> str:
         "poroelasticity": "porous_media", "poro": "porous_media",
         "consolidation": "porous_media", "terzaghi": "porous_media",
         "biot": "porous_media", "geomechanics": "porous_media",
+        "plasticity": "plasticity", "elasto_plasticity": "plasticity",
+        "elastoplasticity": "plasticity", "yield": "plasticity",
+        "mohr_coulomb": "plasticity", "drucker_prager": "plasticity",
+        "von_mises": "plasticity", "j2_plasticity": "plasticity",
+        "soil_plasticity": "plasticity", "metal_plasticity": "plasticity",
     }
 
     mapped = synonyms.get(query_lower, query_lower)

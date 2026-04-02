@@ -176,6 +176,46 @@ class SolidMechanicsGenerator(BaseGenerator):
                     ),
                 },
             },
+            "plasticity_models": {
+                "MAT_Struct_PlasticLinElast": {
+                    "description": "Small-strain J2 (von Mises) with linear isotropic+kinematic hardening",
+                    "parameters": "YOUNG, NUE, DENS, ISOHARD, KINHARD, YIELD, TOL",
+                    "kinematics": "linear only",
+                },
+                "MAT_Struct_DruckerPrager": {
+                    "description": "Small-strain Drucker-Prager (pressure-dependent, smooth cone)",
+                    "parameters": "YOUNG, NUE, DENS, ISOHARD, TOL, C (cohesion), ETA, XI, ETABAR, TANG, MAXITER",
+                    "kinematics": "linear only",
+                    "notes": "ETA/XI/ETABAR are derived from friction/dilatancy angles; see de Souza Neto et al.",
+                },
+                "MAT_PlasticElastHyper": {
+                    "description": "Finite-strain J2/Hill with nonlinear isotropic+kinematic hardening, viscoplasticity",
+                    "parameters": "YOUNG, NUE, DENS, YIELD, ISOHARD, KINHARD, Infyield, Hexp, eta (viscosity)",
+                    "kinematics": "nonlinear",
+                    "features": "Hill anisotropy, Perzyna viscoplasticity, thermal softening (TSI)",
+                },
+                "MAT_Struct_PlasticGTN": {
+                    "description": "Gurson-Tvergaard-Needleman ductile damage with void growth",
+                    "parameters": "YOUNG, NUE, YIELD, ISOHARD, f0, fn, sn, en, fc, kappa, k1, k2, k3",
+                    "kinematics": "linear only",
+                },
+                "MAT_crystal_plasticity": {
+                    "description": "Crystal plasticity with slip/twinning systems (FCC/BCC/HCP)",
+                    "kinematics": "nonlinear",
+                    "features": "Dislocation density evolution, Hall-Petch, multiple lattice types",
+                },
+            },
+            "plasticity_pitfalls": [
+                "Drucker-Prager uses pre-computed constants (ETA, XI, ETABAR) that map from friction/dilatancy "
+                "angles. ETA = 6*sin(phi)/(3-sin(phi)), XI = 6*cos(phi)/(3-sin(phi)), ETABAR = 6*sin(psi)/(3-sin(psi)) "
+                "for the circumscribed outer cone. Getting these wrong silently gives wrong yield stress.",
+                "PlasticLinElast and DruckerPrager are small-strain only (KINEM: linear). "
+                "PlasticElastHyper requires KINEM: nonlinear. Mismatch produces FOUR_C_THROW.",
+                "For quasi-static plasticity, use many small load steps (NUMSTEP >= 100). "
+                "Too few steps causes the Newton iteration to diverge when crossing the yield surface.",
+                "Accumulated plastic strain output is available via 'accumulated_plastic_strain' "
+                "in IO/RUNTIME VTK OUTPUT/STRUCTURE with STRESS_STRAIN: true.",
+            ],
             "pitfalls": [
                 (
                     "KINEM must match the physical assumption.  Using "
