@@ -84,7 +84,7 @@ mcp = FastMCP(
     ),
 )
 
-# Register consolidated tools (10 tools instead of 48)
+# Register consolidated tools (11 tools)
 from tools.consolidated import register_consolidated_tools
 register_consolidated_tools(mcp)
 

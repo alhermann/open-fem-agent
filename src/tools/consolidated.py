@@ -152,6 +152,7 @@ def register_consolidated_tools(mcp: FastMCP):
                 - "precice" — preCICE comparison
                 - "input_guide" — how to write input files for a solver
                 - "solver_guidance" — which solver to use for a physics type
+                - "hardware" — parallelism, GPU, and hardware acceleration capabilities
             solver: Backend name (e.g. 'fenics', 'fourc', 'dealii', 'ngsolve')
             physics: Physics type (e.g. 'poisson', 'linear_elasticity', 'navier_stokes')
         """
@@ -251,11 +252,69 @@ def register_consolidated_tools(mcp: FastMCP):
                         }
             return json.dumps(results, indent=2) if results else f"No solver supports '{physics}'"
 
+        elif topic == "hardware":
+            hw = {
+                "FEniCSx (dolfinx)": {
+                    "parallelism": "MPI (first-class, domain decomposition via PETSc)",
+                    "gpu": "No native GPU. PETSc can use GPU backends (CUDA/HIP) for linear algebra if compiled with Kokkos/CUDA support, but this is not standard.",
+                    "threading": "Limited — PETSc threading for assembly",
+                    "typical_scale": "Millions of DOFs on HPC clusters",
+                },
+                "deal.II": {
+                    "parallelism": "MPI (p4est for distributed meshes) + threading (TBB/std::thread)",
+                    "gpu": "Yes — matrix-free GPU kernels via CUDA and portable backends. GPU support for matrix-free operators is a key feature (step-64 tutorial).",
+                    "threading": "SharedMemory::TBB or std::thread for assembly",
+                    "typical_scale": "Billions of DOFs demonstrated (matrix-free, GPU)",
+                },
+                "4C Multiphysics": {
+                    "parallelism": "MPI (domain decomposition) + OpenMP threading",
+                    "gpu": "No GPU for linear algebra (Epetra-based, CPU-only). Optional ArborX (Kokkos) for GPU-accelerated geometric search only. Tpetra (GPU-capable) not yet integrated.",
+                    "threading": "OpenMP (set OMP_NUM_THREADS)",
+                    "typical_scale": "Millions of DOFs on MPI clusters",
+                    "note": "Trilinos 16.2.0 is the last supported version due to Epetra dependency",
+                },
+                "NGSolve": {
+                    "parallelism": "MPI (via NGSolve's own parallel framework) + shared-memory task parallelism",
+                    "gpu": "Experimental CUDA support for some operations. Not production-ready for most users.",
+                    "threading": "Task-based parallelism (Netgen's built-in scheduler)",
+                    "typical_scale": "Millions of DOFs",
+                },
+                "scikit-fem": {
+                    "parallelism": "Serial only (no MPI). NumPy/SciPy vectorisation for assembly.",
+                    "gpu": "No GPU support. Pure Python/NumPy.",
+                    "threading": "NumPy BLAS threading only",
+                    "typical_scale": "Tens of thousands of DOFs (prototyping)",
+                },
+                "Kratos Multiphysics": {
+                    "parallelism": "MPI (Trilinos-based) + OpenMP for shared memory",
+                    "gpu": "Limited — some GPU acceleration via Trilinos/Kokkos for linear algebra. Not all applications support it.",
+                    "threading": "OpenMP",
+                    "typical_scale": "Millions of DOFs",
+                },
+                "DUNE-fem": {
+                    "parallelism": "MPI (DUNE grid parallelism via ALUGrid/YaspGrid)",
+                    "gpu": "No native GPU support in DUNE-fem. DUNE-copasi has experimental GPU work.",
+                    "threading": "Limited",
+                    "typical_scale": "Moderate (research scale)",
+                },
+            }
+            if solver:
+                key_map = {"fourc": "4C Multiphysics", "4c": "4C Multiphysics",
+                           "fenics": "FEniCSx (dolfinx)", "fenicsx": "FEniCSx (dolfinx)",
+                           "dealii": "deal.II", "deal.ii": "deal.II",
+                           "ngsolve": "NGSolve", "skfem": "scikit-fem", "scikit-fem": "scikit-fem",
+                           "kratos": "Kratos Multiphysics", "dune": "DUNE-fem", "dune-fem": "DUNE-fem"}
+                name = key_map.get(solver.lower(), solver)
+                if name in hw:
+                    return json.dumps({name: hw[name]}, indent=2)
+                return f"No hardware info for {solver}"
+            return json.dumps(hw, indent=2)
+
         else:
             return (
                 "Usage: knowledge(topic, solver, physics)\n"
                 "Topics: physics, pitfalls, materials, coupling, tsi, precice, "
-                "input_guide, solver_guidance"
+                "input_guide, solver_guidance, hardware"
             )
 
     # ═══════════════════════════════════════════════════════════

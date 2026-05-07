@@ -842,6 +842,25 @@ TRANSPORT ELEMENTS:
             "IO/RUNTIME VTK OUTPUT/STRUCTURE may be incompatible with FSI — "
             "FSI overrides INT_STRATEGY internally.  If structure VTK output "
             "causes errors, remove it and use post_vtu for post-processing instead.",
+
+            # GPU / hardware acceleration
+            "4C linear algebra is CPU-only (Epetra-based, Trilinos 16.2.0). "
+            "Epetra does NOT support GPU execution. Tpetra (GPU-capable via "
+            "Kokkos CUDA/HIP/SYCL backends) is not yet integrated. Do NOT "
+            "expect GPU speedup for assembly or linear solves.",
+
+            # ArborX optional GPU component
+            "The only GPU-accelerated component in 4C is ArborX (optional, "
+            "OFF by default), used for geometric search (bounding volume "
+            "hierarchy queries in contact/particle problems). Enable with "
+            "-DFOUR_C_WITH_ARBORX=ON and a Kokkos GPU backend in Trilinos. "
+            "This does NOT accelerate the solver itself.",
+
+            # MPI parallelism
+            "4C supports MPI parallelism for domain decomposition. Use "
+            "mpirun -np N 4C input.4C.yaml for parallel runs. MPI is the "
+            "primary parallelism mechanism for large-scale problems. "
+            "Thread-level parallelism uses OpenMP (set OMP_NUM_THREADS).",
         ],
 
         "element_type_per_physics": {
