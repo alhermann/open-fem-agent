@@ -1,0 +1,228 @@
+"""Session journal — records structured events during MCP tool calls.
+
+Minimal, append-only, zero-friction for tool authors.
+Each MCP session (one server process) gets one journal.
+Events are recorded in-memory and persisted to JSON on shutdown.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+
+# Valid event types
+EVENT_TYPES = frozenset({
+    "tool_call",          # any tool invocation
+    "tool_success",       # tool completed successfully
+    "tool_error",         # tool returned an error
+    "knowledge_lookup",   # knowledge/prepare_simulation called
+    "source_read",        # developer(action='files') called
+    "parameter_override", # agent used non-default parameters
+    "convergence_issue",  # coupling took many iterations
+})
+
+
+@dataclass
+class JournalEvent:
+    """A single event in the session journal."""
+
+    timestamp: float
+    event_type: str
+    tool_name: str
+    solver: str = ""
+    physics: str = ""
+    details: dict = field(default_factory=dict)
+    error_message: str = ""
+    notes: str = ""
+
+    def __post_init__(self):
+        if self.event_type not in EVENT_TYPES:
+            raise ValueError(
+                f"Unknown event_type: {self.event_type!r}. "
+                f"Valid: {sorted(EVENT_TYPES)}"
+            )
+        # Sanitise: truncate long error messages to prevent bloat
+        if len(self.error_message) > 500:
+            self.error_message = self.error_message[:497] + "..."
+        if len(self.notes) > 500:
+            self.notes = self.notes[:497] + "..."
+        # Ensure details is serialisable
+        if not isinstance(self.details, dict):
+            self.details = {}
+
+
+@dataclass
+class SessionJournal:
+    """Collects events for one user session."""
+
+    session_id: str = field(
+        default_factory=lambda: str(uuid.uuid4())[:8]
+    )
+    started_at: float = field(default_factory=time.time)
+    events: list[JournalEvent] = field(default_factory=list)
+    _solvers_used: set = field(default_factory=set, repr=False)
+    _physics_used: set = field(default_factory=set, repr=False)
+
+    # ── Recording ────────────────────────────────────────────
+
+    def record(
+        self,
+        event_type: str,
+        tool_name: str,
+        *,
+        solver: str = "",
+        physics: str = "",
+        details: dict | None = None,
+        error_message: str = "",
+        notes: str = "",
+    ) -> JournalEvent:
+        """Record an event. Returns the created event.
+
+        This is the only method tool authors need to call.
+        Designed to never raise — silently drops malformed events
+        so it cannot break the tool it instruments.
+        """
+        try:
+            evt = JournalEvent(
+                timestamp=time.time(),
+                event_type=event_type,
+                tool_name=tool_name,
+                solver=solver,
+                physics=physics,
+                details=details or {},
+                error_message=str(error_message),
+                notes=str(notes),
+            )
+        except (ValueError, TypeError):
+            # Malformed event — drop silently rather than crash the tool
+            return None  # type: ignore[return-value]
+
+        self.events.append(evt)
+        if solver:
+            self._solvers_used.add(solver)
+        if physics:
+            self._physics_used.add(physics)
+        return evt
+
+    # ── Queries ──────────────────────────────────────────────
+
+    @property
+    def solvers_used(self) -> set[str]:
+        return set(self._solvers_used)
+
+    @property
+    def physics_used(self) -> set[str]:
+        return set(self._physics_used)
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for e in self.events if e.event_type == "tool_error")
+
+    @property
+    def duration_seconds(self) -> float:
+        if not self.events:
+            return 0.0
+        return self.events[-1].timestamp - self.started_at
+
+    def events_by_type(self, event_type: str) -> list[JournalEvent]:
+        return [e for e in self.events if e.event_type == event_type]
+
+    # ── Serialisation ────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dict."""
+        return {
+            "session_id": self.session_id,
+            "started_at": self.started_at,
+            "ended_at": time.time(),
+            "duration_seconds": round(self.duration_seconds, 1),
+            "solvers_used": sorted(self._solvers_used),
+            "physics_used": sorted(self._physics_used),
+            "event_count": len(self.events),
+            "error_count": self.error_count,
+            "events": [_event_to_dict(e) for e in self.events],
+        }
+
+    def save(self, directory: str | Path) -> Path:
+        """Persist journal to disk as JSON. Creates directory if needed.
+
+        Returns the path to the saved file.
+        """
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"session_{self.session_id}.json"
+        data = self.to_dict()
+        # Atomic write: write to tmp then rename
+        tmp = path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2, default=str))
+            tmp.rename(path)
+        except Exception:
+            # If rename fails (Windows), fall back to direct write
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            path.write_text(json.dumps(data, indent=2, default=str))
+        return path
+
+    @classmethod
+    def load(cls, path: str | Path) -> "SessionJournal":
+        """Load a journal from a JSON file."""
+        path = Path(path)
+        data = json.loads(path.read_text())
+        journal = cls(
+            session_id=data["session_id"],
+            started_at=data["started_at"],
+        )
+        for evt_data in data.get("events", []):
+            journal.record(
+                event_type=evt_data["event_type"],
+                tool_name=evt_data["tool_name"],
+                solver=evt_data.get("solver", ""),
+                physics=evt_data.get("physics", ""),
+                details=evt_data.get("details", {}),
+                error_message=evt_data.get("error_message", ""),
+                notes=evt_data.get("notes", ""),
+            )
+        return journal
+
+    def reset(self):
+        """Clear all events. Useful for testing."""
+        self.events.clear()
+        self._solvers_used.clear()
+        self._physics_used.clear()
+
+
+def _event_to_dict(evt: JournalEvent) -> dict[str, Any]:
+    """Convert event to dict, dropping empty strings and empty dicts to save space.
+
+    Preserves numeric zeros and False values (only drops '' and {}).
+    """
+    d = asdict(evt)
+    return {k: v for k, v in d.items() if v != "" and v != {}}
+
+
+# ── Singleton ────────────────────────────────────────────────
+
+_journal: Optional[SessionJournal] = None
+
+
+def get_journal() -> SessionJournal:
+    """Get the session-global journal (singleton per process)."""
+    global _journal
+    if _journal is None:
+        _journal = SessionJournal()
+    return _journal
+
+
+def reset_journal() -> SessionJournal:
+    """Reset the global journal. For testing only."""
+    global _journal
+    _journal = SessionJournal()
+    return _journal

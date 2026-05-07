@@ -95,7 +95,20 @@ load_all_backends()
 
 def main():
     logger.info("Starting Open FEM Agent MCP server")
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        # Persist session journal on shutdown
+        try:
+            from core.session_journal import get_journal
+            from pathlib import Path
+            journal = get_journal()
+            if journal.events:
+                sessions_dir = Path(__file__).parent.parent / "data" / "sessions"
+                path = journal.save(sessions_dir)
+                logger.info(f"Session journal saved: {path} ({len(journal.events)} events)")
+        except Exception as e:
+            logger.warning(f"Could not save session journal: {e}")
 
 
 if __name__ == "__main__":

@@ -132,6 +132,9 @@ def _list_alternative_solvers(current_solver: str, physics: str) -> str:
 def register_consolidated_tools(mcp: FastMCP):
     """Register all consolidated tools — ~12 tools instead of 48."""
 
+    # Session journal — records events for knowledge capture
+    from core.session_journal import get_journal as _get_journal
+
     # ═══════════════════════════════════════════════════════════
     # 1. KNOWLEDGE (replaces 13 separate knowledge tools)
     # ═══════════════════════════════════════════════════════════
@@ -156,6 +159,9 @@ def register_consolidated_tools(mcp: FastMCP):
             solver: Backend name (e.g. 'fenics', 'fourc', 'dealii', 'ngsolve')
             physics: Physics type (e.g. 'poisson', 'linear_elasticity', 'navier_stokes')
         """
+        _get_journal().record("knowledge_lookup", "knowledge",
+                              solver=solver, physics=physics,
+                              notes=f"topic={topic}")
         if topic == "physics" and solver and physics:
             backend = get_backend(solver)
             if not backend:
@@ -496,12 +502,17 @@ def register_consolidated_tools(mcp: FastMCP):
         import subprocess
         import sys
 
+        _journal = _get_journal()
+        _journal.record("tool_call", "run_with_generator", solver=solver)
+
         backend = get_backend(solver)
         if not backend:
             return f"Unknown solver: {solver}"
 
         status, msg = backend.check_availability()
         if status.value != "available":
+            _journal.record("tool_error", "run_with_generator", solver=solver,
+                            error_message=f"Not available: {msg}")
             return f"Solver {solver} not available: {msg}"
 
         _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -521,6 +532,8 @@ def register_consolidated_tools(mcp: FastMCP):
         )
 
         if gen_result.returncode != 0:
+            _journal.record("tool_error", "run_with_generator", solver=solver,
+                            error_message=f"Generator failed: {gen_result.stderr[-200:]}")
             return json.dumps({
                 "status": "failed", "phase": "generator",
                 "error": gen_result.stderr[-500:],
@@ -535,6 +548,8 @@ def register_consolidated_tools(mcp: FastMCP):
                 break
 
         if not input_file:
+            _journal.record("tool_error", "run_with_generator", solver=solver,
+                            error_message="Generator did not produce an input file")
             return json.dumps({
                 "status": "failed", "phase": "generator",
                 "error": "Generator did not produce an input file",
@@ -549,6 +564,12 @@ def register_consolidated_tools(mcp: FastMCP):
         else:
             job = await run_coro
         _jobs[job.job_id] = job
+
+        if job.error:
+            _journal.record("tool_error", "run_with_generator", solver=solver,
+                            error_message=job.error[:300])
+        else:
+            _journal.record("tool_success", "run_with_generator", solver=solver)
 
         result = {
             "job_id": job.job_id, "solver": solver,
@@ -588,12 +609,17 @@ def register_consolidated_tools(mcp: FastMCP):
             np: MPI processes
             critic_approved: Set True only after critic agent approved
         """
+        _journal = _get_journal()
+        _journal.record("tool_call", "run_simulation", solver=solver)
+
         backend = get_backend(solver)
         if not backend:
             return f"Unknown solver: {solver}"
 
         status, msg = backend.check_availability()
         if status.value != "available":
+            _journal.record("tool_error", "run_simulation", solver=solver,
+                            error_message=f"Not available: {msg}")
             return f"Solver {solver} not available: {msg}"
 
         _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -609,6 +635,12 @@ def register_consolidated_tools(mcp: FastMCP):
             job = await run_coro
         _jobs[job.job_id] = job
 
+        if job.error:
+            _journal.record("tool_error", "run_simulation", solver=solver,
+                            error_message=job.error[:300])
+        else:
+            _journal.record("tool_success", "run_simulation", solver=solver)
+
         result = {
             "job_id": job.job_id, "solver": solver,
             "status": job.status, "work_dir": str(job.work_dir),
@@ -619,7 +651,6 @@ def register_consolidated_tools(mcp: FastMCP):
             result["error"] = job.error[:500]
         if job.status == "completed":
             result["output_files"] = [f.name for f in backend.get_result_files(job)]
-            # Include stdout so the agent sees script output directly
             stdout_log = work_dir / "stdout.log"
             if stdout_log.exists():
                 text = stdout_log.read_text()
@@ -655,6 +686,9 @@ def register_consolidated_tools(mcp: FastMCP):
             params: JSON with additional parameters
             critic_approved: Set True after critic review
         """
+        _get_journal().record("tool_call", "coupled_solve",
+                              solver=f"{solver_a}->{solver_b}",
+                              physics=problem)
         # Import and delegate to the full coupling implementation
         from tools.coupling import register_coupling_tools
         # The coupling tools are complex — delegate to the original implementation
@@ -860,6 +894,9 @@ def register_consolidated_tools(mcp: FastMCP):
             solver: Backend name
             keyword: File pattern for 'files' action
         """
+        if action == "files":
+            _get_journal().record("source_read", "developer",
+                                  solver=solver, notes=f"keyword={keyword}")
         if action == "architecture" and solver:
             from tools.developer import _SOURCE_LOCATIONS
             info = _SOURCE_LOCATIONS.get(solver, {})
@@ -922,6 +959,8 @@ def register_consolidated_tools(mcp: FastMCP):
             physics: Physics type (e.g. 'poisson', 'particle_pd', 'navier_stokes',
                      'magnetostatics', 'thermal', 'elasticity')
         """
+        _get_journal().record("knowledge_lookup", "prepare_simulation",
+                              solver=solver, physics=physics)
         parts = []
 
         backend = get_backend(solver)
