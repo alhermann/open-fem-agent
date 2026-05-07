@@ -1088,6 +1088,109 @@ def register_consolidated_tools(mcp: FastMCP):
         except Exception as e:
             return f"Error: {e}"
 
+    # ═══════════════════════════════════════════════════════════
+    # 12. SESSION INSIGHTS (knowledge capture)
+    # ═══════════════════════════════════════════════════════════
+
+    @mcp.tool()
+    def session_insights(action: str = "review") -> str:
+        """Review knowledge discovered during this session.
+
+        After your simulation session, call this to see what the agent
+        learned that could help future users.
+
+        Args:
+            action:
+                - "review" — show candidate knowledge for approval
+                - "approve_all" — approve all candidates for contribution
+                - "reject_all" — dismiss all candidates
+                - "stats" — session statistics (events, solvers, errors)
+        """
+        from core.session_journal import get_journal
+        from core.session_analyzer import (
+            analyze_journal, filter_against_existing, format_candidates,
+        )
+
+        journal = get_journal()
+
+        if action == "stats":
+            return json.dumps({
+                "session_id": journal.session_id,
+                "events": len(journal.events),
+                "errors": journal.error_count,
+                "solvers_used": sorted(journal.solvers_used),
+                "physics_used": sorted(journal.physics_used),
+                "duration_seconds": round(journal.duration_seconds, 1),
+            }, indent=2)
+
+        if action == "review":
+            if len(journal.events) < 3:
+                return "Session too short for knowledge extraction (< 3 tool calls)."
+            candidates = analyze_journal(journal)
+            # Filter against existing knowledge
+            existing = _collect_existing_pitfalls()
+            candidates = filter_against_existing(candidates, existing)
+            if not candidates:
+                return "No new knowledge candidates discovered in this session."
+            # Store candidates for potential approval
+            _pending_candidates.clear()
+            _pending_candidates.extend(candidates)
+            return format_candidates(candidates)
+
+        if action == "approve_all":
+            if not _pending_candidates:
+                return "No pending candidates. Call session_insights('review') first."
+            saved = _save_candidates(_pending_candidates, journal.session_id)
+            count = len(_pending_candidates)
+            _pending_candidates.clear()
+            return f"Approved {count} candidate(s). Saved to: {saved}"
+
+        if action == "reject_all":
+            count = len(_pending_candidates)
+            _pending_candidates.clear()
+            return f"Rejected {count} candidate(s)."
+
+        return (
+            "Usage: session_insights(action)\n"
+            "Actions: review, approve_all, reject_all, stats"
+        )
+
+    # Storage for pending candidates between review and approve
+    _pending_candidates: list = []
+
+
+def _collect_existing_pitfalls() -> list[str]:
+    """Gather all existing pitfall strings for novelty checking."""
+    pitfalls = []
+    try:
+        for b in available_backends():
+            for p in b.supported_physics():
+                k = b.get_knowledge(p.name)
+                if k and isinstance(k, dict) and "pitfalls" in k:
+                    for pit in k["pitfalls"]:
+                        if isinstance(pit, str):
+                            pitfalls.append(pit)
+                        elif isinstance(pit, dict) and "text" in pit:
+                            pitfalls.append(pit["text"])
+    except Exception:
+        pass
+    return pitfalls
+
+
+def _save_candidates(candidates: list, session_id: str) -> str:
+    """Save approved candidates to community_knowledge/pending/."""
+    from pathlib import Path
+    pending_dir = Path(__file__).parent.parent.parent / "data" / "community_knowledge" / "pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    for c in candidates:
+        entries.append(c.to_dict())
+
+    path = pending_dir / f"session_{session_id}.json"
+    path.write_text(json.dumps(entries, indent=2, default=str))
+    return str(path)
+
 
 # ═══════════════════════════════════════════════════════════════
 # Helper functions for knowledge (copied from original tools)

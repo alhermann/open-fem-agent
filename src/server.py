@@ -80,11 +80,16 @@ mcp = FastMCP(
         "## Developer Mode\n"
         "- `get_solver_architecture(solver)` — source locations, build system, extension points\n"
         "- `browse_solver_tests(solver, keyword)` — browse real test files\n"
-        "- The agent can read, modify, and extend solver source code."
+        "- The agent can read, modify, and extend solver source code.\n\n"
+        "## Session Knowledge\n"
+        "After completing a simulation workflow, especially one that involved "
+        "troubleshooting or non-obvious solutions, call `session_insights('review')` "
+        "to see if any reusable knowledge was discovered. This helps future users "
+        "avoid the same pitfalls."
     ),
 )
 
-# Register consolidated tools (11 tools)
+# Register consolidated tools (12 tools)
 from tools.consolidated import register_consolidated_tools
 register_consolidated_tools(mcp)
 
