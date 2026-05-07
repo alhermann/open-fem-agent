@@ -1,0 +1,55 @@
+name: Knowledge Freshness Check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 6AM UTC
+  push:
+    paths:
+      - 'data/**'
+      - 'src/tools/deep_knowledge.py'
+      - 'src/backends/*/backend.py'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[all-solvers,dev]"
+
+      - name: Generate fingerprints
+        run: python scripts/fingerprint_solvers.py
+
+      - name: Compare against saved fingerprints
+        run: python scripts/fingerprint_solvers.py --compare
+        continue-on-error: true
+        id: compare
+
+      - name: Create issue on drift
+        if: steps.compare.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const output = execSync('python scripts/fingerprint_solvers.py --compare 2>&1 || true').toString();
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Solver API drift detected',
+              body: `Weekly fingerprint check found API changes:\n\n\`\`\`\n${output}\n\`\`\`\n\nPlease review and update the knowledge base accordingly.`,
+              labels: ['knowledge-drift'],
+            });
+
+      - name: Upload fingerprints
+        uses: actions/upload-artifact@v4
+        with:
+          name: solver-fingerprints
+          path: data/fingerprints/

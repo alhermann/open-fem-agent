@@ -209,6 +209,14 @@ def register_consolidated_tools(mcp: FastMCP):
                     et = general_k.get("element_type_per_physics")
                     if et:
                         all_pitfalls["element_types"] = et
+                # Include community-contributed knowledge
+                community = _load_community_knowledge(solver)
+                if community:
+                    all_pitfalls["community_contributed"] = [
+                        {"title": c["title"], "description": c.get("description", ""),
+                         "category": c.get("category", ""), "confidence": c.get("confidence", 0)}
+                        for c in community
+                    ]
                 return json.dumps(all_pitfalls, indent=2)
             return f"No pitfalls found for {solver}"
 
@@ -1160,7 +1168,10 @@ def register_consolidated_tools(mcp: FastMCP):
 
 
 def _collect_existing_pitfalls() -> list[str]:
-    """Gather all existing pitfall strings for novelty checking."""
+    """Gather all existing pitfall strings for novelty checking.
+
+    Includes both built-in knowledge AND community contributions.
+    """
     pitfalls = []
     try:
         for b in available_backends():
@@ -1174,7 +1185,33 @@ def _collect_existing_pitfalls() -> list[str]:
                             pitfalls.append(pit["text"])
     except Exception:
         pass
+    # Also include community contributions
+    for c in _load_community_knowledge():
+        pitfalls.append(c.get("title", ""))
     return pitfalls
+
+
+def _load_community_knowledge(solver: str = "") -> list[dict]:
+    """Load approved community knowledge from pending/ directory.
+
+    Returns list of candidate dicts. Optionally filter by solver.
+    """
+    from pathlib import Path
+    pending_dir = Path(__file__).parent.parent.parent / "data" / "community_knowledge" / "pending"
+    if not pending_dir.exists():
+        return []
+    entries = []
+    for f in sorted(pending_dir.glob("session_*.json")):
+        try:
+            data = json.loads(f.read_text())
+            if isinstance(data, list):
+                for entry in data:
+                    if solver and entry.get("solver", "") != solver:
+                        continue
+                    entries.append(entry)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return entries
 
 
 def _save_candidates(candidates: list, session_id: str) -> str:
