@@ -7,11 +7,11 @@ An open-source **Model Context Protocol (MCP) server** that connects AI coding a
 | Metric | Value |
 |--------|-------|
 | FEM backends | **7 working** (FEniCSx, deal.II, 4C, NGSolve, scikit-fem, Kratos, DUNE-fem) |
-| MCP tools | **12** consolidated tools |
+| MCP tools | **13** consolidated tools |
 | Physics types | **194** across all backends |
 | Coupling modes | **7** (heat DD, Poisson DD, one-way TSI, two-way TSI, relaxation study, L-bracket, preCICE) |
 | Supported solver pairs | **20** for domain decomposition (any Python solver + any backend) |
-| Tests | **173 passed** |
+| Tests | **209 passed** |
 | E2E stress tests | **24 completed** (24 pass) |
 
 ## Quick Start
