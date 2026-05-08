@@ -33,6 +33,7 @@ class CandidateKnowledge:
     title: str          # one-line summary
     description: str    # detailed explanation
     confidence: float   # 0.0 to 1.0
+    fix_diff: str = ""  # what changed between failing and succeeding input
     evidence: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,6 +109,8 @@ def format_candidates(candidates: list[CandidateKnowledge]) -> str:
         lines.append(f"### [{i}] {c.category.upper()}: {c.title}")
         lines.append(f"Confidence: {c.confidence:.1f} | Solver: {c.solver or 'n/a'} | Physics: {c.physics or 'n/a'}")
         lines.append(c.description)
+        if c.fix_diff:
+            lines.append(f"**What changed:** {c.fix_diff}")
         lines.append("")
     return "\n".join(lines)
 
@@ -116,7 +119,11 @@ def format_candidates(candidates: list[CandidateKnowledge]) -> str:
 
 
 def _detect_error_then_success(events: list[dict]) -> list[CandidateKnowledge]:
-    """Pattern 1: tool fails, agent retries (possibly after fixes), succeeds."""
+    """Pattern 1: tool fails, agent retries (possibly after fixes), succeeds.
+
+    When input_snapshot is available, computes the diff between failing
+    and succeeding inputs — this diff IS the knowledge.
+    """
     candidates = []
     for i, evt in enumerate(events):
         if evt.get("event_type") != "tool_error":
@@ -134,15 +141,25 @@ def _detect_error_then_success(events: list[dict]) -> list[CandidateKnowledge]:
                 confidence = min(0.9, 0.5 + 0.1 * (5 - steps_between))
                 confidence = max(0.3, confidence)
                 error_msg = evt.get("error_message", "unknown error")
+
+                # Compute input diff if snapshots available
+                fail_snap = evt.get("input_snapshot", {})
+                succ_snap = later.get("input_snapshot", {})
+                fix_diff = _diff_snapshots(fail_snap, succ_snap)
+
+                desc = f"Tool `{tool}` failed with: {error_msg}."
+                if fix_diff:
+                    desc += f" Fixed by: {fix_diff}."
+                else:
+                    desc += f" Resolved after {steps_between} step(s)."
+
                 candidates.append(CandidateKnowledge(
                     category="pitfall",
                     solver=solver,
                     physics=evt.get("physics", ""),
                     title=f"{tool}: {error_msg[:80]}",
-                    description=(
-                        f"Tool `{tool}` failed with: {error_msg}. "
-                        f"Resolved after {steps_between} step(s)."
-                    ),
+                    description=desc,
+                    fix_diff=fix_diff,
                     confidence=round(confidence, 2),
                     evidence=[evt, later],
                 ))
@@ -225,6 +242,29 @@ def _detect_convergence_issues(events: list[dict]) -> list[CandidateKnowledge]:
     return candidates
 
 
+def _diff_snapshots(fail: dict, succ: dict) -> str:
+    """Compute human-readable diff between failing and succeeding input snapshots.
+
+    Returns a description of what changed, or empty string if no snapshots.
+    """
+    if not fail and not succ:
+        return ""
+    if not fail or not succ:
+        return ""
+
+    diffs = []
+    all_keys = sorted(set(fail) | set(succ))
+    for k in all_keys:
+        fv = fail.get(k, "<absent>")
+        sv = succ.get(k, "<absent>")
+        if fv != sv:
+            diffs.append(f"{k}: {fv!r} -> {sv!r}")
+
+    if not diffs:
+        return "inputs structurally identical (fix was in content)"
+    return "; ".join(diffs)
+
+
 # ── Helpers ──────────────────────────────────────────────────
 
 
@@ -239,6 +279,7 @@ def _event_dict(evt) -> dict:
         "error_message": evt.error_message,
         "notes": evt.notes,
         "timestamp": evt.timestamp,
+        "input_snapshot": evt.input_snapshot,
     }
 
 

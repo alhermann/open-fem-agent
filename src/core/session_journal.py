@@ -39,6 +39,7 @@ class JournalEvent:
     details: dict = field(default_factory=dict)
     error_message: str = ""
     notes: str = ""
+    input_snapshot: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.event_type not in EVENT_TYPES:
@@ -51,9 +52,11 @@ class JournalEvent:
             self.error_message = self.error_message[:497] + "..."
         if len(self.notes) > 500:
             self.notes = self.notes[:497] + "..."
-        # Ensure details is serialisable
+        # Ensure details and input_snapshot are serialisable
         if not isinstance(self.details, dict):
             self.details = {}
+        if not isinstance(self.input_snapshot, dict):
+            self.input_snapshot = {}
 
 
 @dataclass
@@ -80,6 +83,7 @@ class SessionJournal:
         details: dict | None = None,
         error_message: str = "",
         notes: str = "",
+        input_snapshot: dict | None = None,
     ) -> JournalEvent:
         """Record an event. Returns the created event.
 
@@ -95,6 +99,7 @@ class SessionJournal:
                 solver=solver,
                 physics=physics,
                 details=details or {},
+                input_snapshot=input_snapshot or {},
                 error_message=str(error_message),
                 notes=str(notes),
             )

@@ -264,5 +264,60 @@ class TestSerialisation(unittest.TestCase):
         self.assertIn("parameter_tip", categories)
 
 
+class TestDiffCapture(unittest.TestCase):
+    """Test input snapshot diff capture."""
+
+    def test_diff_detected_between_snapshots(self):
+        """Error with one snapshot, success with different snapshot → diff captured."""
+        j = SessionJournal(session_id="diff1")
+        j.record("tool_error", "run_simulation", solver="fenics",
+                 error_message="ValueError: bad mesh",
+                 input_snapshot={"input_length": 500, "input_hash": "abc123",
+                                 "solver": "fenics"})
+        j.record("tool_success", "run_simulation", solver="fenics",
+                 input_snapshot={"input_length": 620, "input_hash": "def456",
+                                 "solver": "fenics"})
+        candidates = analyze_journal(j)
+        pitfalls = [c for c in candidates if c.category == "pitfall"]
+        self.assertGreaterEqual(len(pitfalls), 1)
+        self.assertIn("input_length", pitfalls[0].fix_diff)
+        self.assertIn("input_hash", pitfalls[0].fix_diff)
+
+    def test_no_diff_without_snapshots(self):
+        """Error→success without snapshots → empty fix_diff."""
+        j = SessionJournal(session_id="nodiff")
+        j.record("tool_error", "run_simulation", solver="x",
+                 error_message="fail")
+        j.record("tool_success", "run_simulation", solver="x")
+        candidates = analyze_journal(j)
+        pitfalls = [c for c in candidates if c.category == "pitfall"]
+        self.assertGreaterEqual(len(pitfalls), 1)
+        self.assertEqual(pitfalls[0].fix_diff, "")
+
+    def test_identical_snapshots_noted(self):
+        """Same snapshot on error and success → 'structurally identical' note."""
+        j = SessionJournal(session_id="same")
+        snap = {"input_length": 500, "input_hash": "abc", "solver": "fenics"}
+        j.record("tool_error", "run_simulation", solver="fenics",
+                 error_message="timeout", input_snapshot=snap)
+        j.record("tool_success", "run_simulation", solver="fenics",
+                 input_snapshot=snap)
+        candidates = analyze_journal(j)
+        pitfalls = [c for c in candidates if c.category == "pitfall"]
+        self.assertGreaterEqual(len(pitfalls), 1)
+        self.assertIn("identical", pitfalls[0].fix_diff)
+
+    def test_fix_diff_in_formatted_output(self):
+        from core.session_analyzer import format_candidates, CandidateKnowledge
+        c = CandidateKnowledge(
+            category="pitfall", solver="x", physics="y",
+            title="test", description="desc", confidence=0.8,
+            fix_diff="input_length: 500 -> 620",
+        )
+        text = format_candidates([c])
+        self.assertIn("What changed", text)
+        self.assertIn("input_length", text)
+
+
 if __name__ == "__main__":
     unittest.main()

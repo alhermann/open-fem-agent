@@ -129,6 +129,24 @@ def _list_alternative_solvers(current_solver: str, physics: str) -> str:
     return "Other solvers that support this physics:\n" + "\n".join(alternatives)
 
 
+def _make_input_snapshot(input_content: str, solver: str = "",
+                         extra: dict | None = None) -> dict:
+    """Create a sanitised snapshot of simulation input for diff capture.
+
+    Captures structure (length, line count, key patterns) without leaking content.
+    """
+    import hashlib
+    snap = {
+        "solver": solver,
+        "input_length": len(input_content),
+        "input_lines": input_content.count("\n") + 1,
+        "input_hash": hashlib.sha256(input_content.encode()).hexdigest()[:12],
+    }
+    if extra:
+        snap.update(extra)
+    return snap
+
+
 def register_consolidated_tools(mcp: FastMCP):
     """Register all consolidated tools — ~12 tools instead of 48."""
 
@@ -511,7 +529,9 @@ def register_consolidated_tools(mcp: FastMCP):
         import sys
 
         _journal = _get_journal()
-        _journal.record("tool_call", "run_with_generator", solver=solver)
+        _snap = _make_input_snapshot(generator_script, solver, {"type": "generator"})
+        _journal.record("tool_call", "run_with_generator", solver=solver,
+                        input_snapshot=_snap)
 
         backend = get_backend(solver)
         if not backend:
@@ -520,7 +540,8 @@ def register_consolidated_tools(mcp: FastMCP):
         status, msg = backend.check_availability()
         if status.value != "available":
             _journal.record("tool_error", "run_with_generator", solver=solver,
-                            error_message=f"Not available: {msg}")
+                            error_message=f"Not available: {msg}",
+                            input_snapshot=_snap)
             return f"Solver {solver} not available: {msg}"
 
         _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -541,7 +562,8 @@ def register_consolidated_tools(mcp: FastMCP):
 
         if gen_result.returncode != 0:
             _journal.record("tool_error", "run_with_generator", solver=solver,
-                            error_message=f"Generator failed: {gen_result.stderr[-200:]}")
+                            error_message=f"Generator failed: {gen_result.stderr[-200:]}",
+                            input_snapshot=_snap)
             return json.dumps({
                 "status": "failed", "phase": "generator",
                 "error": gen_result.stderr[-500:],
@@ -557,7 +579,8 @@ def register_consolidated_tools(mcp: FastMCP):
 
         if not input_file:
             _journal.record("tool_error", "run_with_generator", solver=solver,
-                            error_message="Generator did not produce an input file")
+                            error_message="Generator did not produce an input file",
+                            input_snapshot=_snap)
             return json.dumps({
                 "status": "failed", "phase": "generator",
                 "error": "Generator did not produce an input file",
@@ -565,6 +588,9 @@ def register_consolidated_tools(mcp: FastMCP):
             }, indent=2)
 
         input_content = input_file.read_text()
+        # Update snapshot with the generated input's shape
+        _snap_run = _make_input_snapshot(input_content, solver,
+                                         {"type": "generated_input", "input_file": input_file.name})
         from core.backend import JobHandle
         run_coro = backend.run(input_content, work_dir, np=np, timeout=None)
         if ctx is not None:
@@ -575,9 +601,11 @@ def register_consolidated_tools(mcp: FastMCP):
 
         if job.error:
             _journal.record("tool_error", "run_with_generator", solver=solver,
-                            error_message=job.error[:300])
+                            error_message=job.error[:300],
+                            input_snapshot=_snap_run)
         else:
-            _journal.record("tool_success", "run_with_generator", solver=solver)
+            _journal.record("tool_success", "run_with_generator", solver=solver,
+                            input_snapshot=_snap_run)
 
         result = {
             "job_id": job.job_id, "solver": solver,
@@ -618,7 +646,9 @@ def register_consolidated_tools(mcp: FastMCP):
             critic_approved: Set True only after critic agent approved
         """
         _journal = _get_journal()
-        _journal.record("tool_call", "run_simulation", solver=solver)
+        _snap = _make_input_snapshot(input_content, solver)
+        _journal.record("tool_call", "run_simulation", solver=solver,
+                        input_snapshot=_snap)
 
         backend = get_backend(solver)
         if not backend:
@@ -627,7 +657,8 @@ def register_consolidated_tools(mcp: FastMCP):
         status, msg = backend.check_availability()
         if status.value != "available":
             _journal.record("tool_error", "run_simulation", solver=solver,
-                            error_message=f"Not available: {msg}")
+                            error_message=f"Not available: {msg}",
+                            input_snapshot=_snap)
             return f"Solver {solver} not available: {msg}"
 
         _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -645,9 +676,11 @@ def register_consolidated_tools(mcp: FastMCP):
 
         if job.error:
             _journal.record("tool_error", "run_simulation", solver=solver,
-                            error_message=job.error[:300])
+                            error_message=job.error[:300],
+                            input_snapshot=_snap)
         else:
-            _journal.record("tool_success", "run_simulation", solver=solver)
+            _journal.record("tool_success", "run_simulation", solver=solver,
+                            input_snapshot=_snap)
 
         result = {
             "job_id": job.job_id, "solver": solver,
