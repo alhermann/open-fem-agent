@@ -255,21 +255,24 @@ def _is_known(candidate: CandidateKnowledge, existing: list[str]) -> bool:
 
 
 def _deduplicate(candidates: list[CandidateKnowledge]) -> list[CandidateKnowledge]:
-    """Remove near-duplicate candidates (same title similarity > 80%)."""
+    """Remove near-duplicate candidates (same title similarity > 80%).
+
+    When duplicates are found, keeps the higher-confidence one.
+    """
     unique: list[CandidateKnowledge] = []
     for c in candidates:
-        is_dup = False
-        for existing in unique:
+        dup_index = -1
+        for i, existing in enumerate(unique):
             ratio = SequenceMatcher(
                 None, c.title.lower(), existing.title.lower()
             ).ratio()
             if ratio > 0.8:
-                # Keep the higher-confidence one
-                if c.confidence > existing.confidence:
-                    unique.remove(existing)
-                    unique.append(c)
-                is_dup = True
+                dup_index = i
                 break
-        if not is_dup:
+        if dup_index >= 0:
+            # Replace with higher-confidence version
+            if c.confidence > unique[dup_index].confidence:
+                unique[dup_index] = c
+        else:
             unique.append(c)
     return unique
