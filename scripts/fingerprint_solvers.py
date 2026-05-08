@@ -213,8 +213,14 @@ SOLVERS = {
 }
 
 
-def generate_all(solvers: list[str] | None = None) -> dict[str, dict]:
-    """Generate fingerprints for all (or specified) solvers."""
+def generate_all(solvers: list[str] | None = None,
+                  run_smoke: bool = True) -> dict[str, dict]:
+    """Generate fingerprints for all (or specified) solvers.
+
+    Args:
+        solvers: List of solver names, or None for all.
+        run_smoke: If True, also run smoke tests (actual FEM solves).
+    """
     targets = solvers or list(SOLVERS.keys())
     results = {}
     for name in targets:
@@ -227,6 +233,25 @@ def generate_all(solvers: list[str] | None = None) -> dict[str, dict]:
             except Exception as e:
                 results[name] = {"solver": name, "error": str(e)}
                 print(f"ERROR: {e}")
+
+    if run_smoke:
+        print("\nRunning smoke tests...")
+        try:
+            # Add src to path for smoke_tests module
+            src_dir = str(Path(__file__).parent.parent / "src")
+            if src_dir not in sys.path:
+                sys.path.insert(0, src_dir)
+            from core.smoke_tests import run_all_smoke_tests
+            smoke_results = run_all_smoke_tests(targets)
+            for name, sr in smoke_results.items():
+                print(f"  {name}: {'PASS' if sr.passed else 'FAIL'}"
+                      f" ({sr.duration_ms:.0f}ms)"
+                      f"{'' if sr.passed else f' — {sr.error}'}")
+                if name in results:
+                    results[name]["smoke_test"] = sr.to_dict()
+        except Exception as e:
+            print(f"  Smoke tests unavailable: {e}")
+
     return results
 
 
