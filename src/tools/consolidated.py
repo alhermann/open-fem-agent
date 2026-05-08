@@ -1097,7 +1097,44 @@ def register_consolidated_tools(mcp: FastMCP):
             return f"Error: {e}"
 
     # ═══════════════════════════════════════════════════════════
-    # 12. SESSION INSIGHTS (knowledge capture)
+    # 12. BACKEND DISCOVERY
+    # ═══════════════════════════════════════════════════════════
+
+    @mcp.tool()
+    def rediscover_backends(confirm: bool = False) -> str:
+        """Probe the system for solver backends and report findings.
+
+        Searches pip packages, conda environments, common build directories,
+        and source roots. In developer mode, reports git branch and status.
+
+        Args:
+            confirm: If True, save the discovered config for future sessions.
+                     If False (default), just report what was found.
+        """
+        from core.autodiscovery import (
+            discover_backends as _discover,
+            format_discovery,
+            save_discovered_config,
+        )
+
+        results = _discover()
+        report = format_discovery(results)
+
+        if confirm:
+            path = save_discovered_config(results)
+            report += f"\n\nConfig saved to `{path}`. Will be used on next restart."
+        else:
+            found_count = sum(1 for r in results if r.found)
+            if found_count > 0:
+                report += (
+                    f"\n\nCall `rediscover_backends(confirm=True)` to save this "
+                    f"config for future sessions."
+                )
+
+        return report
+
+    # ═══════════════════════════════════════════════════════════
+    # 13. SESSION INSIGHTS (knowledge capture)
     # ═══════════════════════════════════════════════════════════
 
     @mcp.tool()

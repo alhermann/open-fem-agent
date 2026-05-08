@@ -90,7 +90,31 @@ def recommend_backend(physics: str) -> Optional[SolverBackend]:
 
 
 def load_all_backends():
-    """Import and register all known backends."""
+    """Import and register all known backends.
+
+    Checks for a persistent discovered_config.json first (from rediscover_backends),
+    then falls back to standard import-time registration.
+    """
+    # Load discovered config if available (sets env vars for backends)
+    try:
+        from core.autodiscovery import load_discovered_config
+        config = load_discovered_config()
+        if config and "backends" in config:
+            import os
+            for backend, info in config["backends"].items():
+                loc = info.get("location", "")
+                if backend == "fenics" and loc:
+                    os.environ.setdefault("FENICS_PYTHON", loc)
+                elif backend == "fourc" and loc:
+                    os.environ.setdefault("FOURC_BINARY", loc)
+                src_root = info.get("source_root", "")
+                if src_root:
+                    env_var = f"{backend.upper()}_ROOT"
+                    os.environ.setdefault(env_var, src_root)
+            logger.info(f"Loaded discovered config: {len(config['backends'])} backends")
+    except Exception as e:
+        logger.debug(f"No discovered config: {e}")
+
     # Each backend module registers itself on import
     try:
         from backends.fourc.backend import register as register_fourc
