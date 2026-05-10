@@ -98,7 +98,7 @@ def register_simulation_tools(mcp: FastMCP):
 
         # Step 2: Find the generated input file
         input_file = None
-        for pattern in ["*.4C.yaml", "*.yaml", "input.*"]:
+        for pattern in ["*.4C.yaml", "*.yaml", "input.*", "solve.py", "MainKratos.py"]:
             matches = list(work_dir.glob(pattern))
             if matches:
                 input_file = matches[0]

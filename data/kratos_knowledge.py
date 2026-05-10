@@ -827,12 +827,12 @@ CONVECTION_DIFFUSION = {
         "EulerianConvDiff3D4N": "Eulerian conv-diff tetrahedron",
         "EulerianConvDiff3D8N": "Eulerian conv-diff hexahedron",
 
-        # Laplacian elements (simpler, pure diffusion)
-        "LaplacianElement2D3N": "Pure diffusion (Laplacian) triangle",
-        "LaplacianElement3D4N": "Pure diffusion (Laplacian) tetrahedron",
+        # Laplacian elements (diffusion + volumetric source)
+        "LaplacianElement2D3N": "Diffusion (Laplacian) triangle — assembles HEAT_FLUX volumetric source",
+        "LaplacianElement3D4N": "Diffusion (Laplacian) tetrahedron — assembles HEAT_FLUX volumetric source",
 
-        # NOTE: LaplacianElement does NOT assemble HEAT_FLUX source term!
-        # Use EulerianConvDiff elements for problems WITH source terms.
+        # NOTE: LaplacianElement DOES assemble HEAT_FLUX (verified in laplacian_element.cpp).
+        # Use EulerianConvDiff if you also need convection or time-dependent dynamics.
 
         # Generic element names used for ReplaceElementsAndConditionsProcess
         "Element2D3N": "Generic 2D triangle (replaced at runtime)",
@@ -930,8 +930,8 @@ CONVECTION_DIFFUSION = {
     },
 
     "pitfalls": [
-        "CRITICAL: LaplacianElement does NOT assemble HEAT_FLUX source terms!",
-        "Use EulerianConvDiff elements for any problem WITH source terms (Poisson with f != 0)",
+        "LaplacianElement DOES assemble HEAT_FLUX volumetric source terms (verified against laplacian_element.cpp).",
+        "Use EulerianConvDiff elements only if you also need convection or transient dynamics; LaplacianElement is sufficient for stationary Poisson with source.",
         "Properties must be assigned NODALLY (not on element) via assign_properties process",
         "The solver uses ReplaceElementsAndConditionsProcess to swap generic elements at runtime",
         "For pure Poisson: still use ConvectionDiffusionApplication with zero convection velocity",

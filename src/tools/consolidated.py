@@ -571,7 +571,7 @@ def register_consolidated_tools(mcp: FastMCP):
             }, indent=2)
 
         input_file = None
-        for pattern in ["*.4C.yaml", "*.yaml", "input.*", "solve.py"]:
+        for pattern in ["*.4C.yaml", "*.yaml", "input.*", "solve.py", "MainKratos.py"]:
             matches = list(work_dir.glob(pattern))
             if matches:
                 input_file = matches[0]
